@@ -258,6 +258,11 @@ fn tools() -> Value {
             "inputSchema": { "type": "object", "properties": { "tab": tab }, "required": ["tab"] },
         },
         {
+            "name": "annulus_elevate",
+            "description": "Asks the owner to type the SSH password in Annulus, then refreshes sudo credentials in one of your SSH tabs. The password stays in Annulus and is never returned to you. Wait for the owner; do not ask for or work around the password.",
+            "inputSchema": { "type": "object", "properties": { "tab": tab }, "required": ["tab"] },
+        },
+        {
             "name": "annulus_close",
             "description": "Closes one of your tabs. By default the owner keeps agents from closing tabs, so they can read what you did: then it is refused and the tab stays, which is fine.",
             "inputSchema": { "type": "object", "properties": { "tab": tab }, "required": ["tab"] },
@@ -339,6 +344,10 @@ fn run_tool(client: &mut Client, name: &str, arguments: &Value) -> Result<String
         "annulus_interrupt" => {
             client.interrupt(tab()?)?;
             "interrupted".into()
+        }
+        "annulus_elevate" => {
+            client.elevate(tab()?)?;
+            "sudo credentials refreshed".into()
         }
         "annulus_close" => {
             client.close(tab()?)?;
@@ -500,6 +509,7 @@ mod tests {
                 "annulus_run",
                 "annulus_wait",
                 "annulus_interrupt",
+                "annulus_elevate",
                 "annulus_close"
             ]
         );

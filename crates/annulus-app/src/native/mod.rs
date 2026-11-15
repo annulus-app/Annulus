@@ -1275,13 +1275,10 @@ impl NativeApp {
         if ui.had_input() || self.last_input.is_none() {
             self.last_input = Some(now);
         }
-        // Tabs not on screen keep their dots current and reconnect dropped sessions; not while
-        // the vault is locked, when their logins are gone.
-        let active = if self.vault.is_none() {
-            usize::MAX
-        } else {
-            self.active
-        };
+        // Take in terminal events before drawing. In particular, a clean exit can close the
+        // active SSH tab in this frame instead of briefly drawing its ended-session banner.
+        // Reconnects still do not run while the vault is locked, when their logins are gone.
+        let active = self.active;
         let waker = self.waker.clone();
         let (scrollback, unlocked) = (self.settings.scrollback, self.vault.is_some());
         for tab in &mut self.tabs {
@@ -1293,11 +1290,10 @@ impl NativeApp {
             .tabs
             .iter_mut()
             .enumerate()
-            .filter(|(index, _)| *index != active)
-            .filter_map(|(_, tab)| match &mut tab.terminal {
+            .filter_map(|(index, tab)| match &mut tab.terminal {
                 Some(TermView::Live(panes)) => {
                     // An agent's tab opened behind starts its shell unseen, so it can run.
-                    if unlocked && tab.agent.is_some() {
+                    if unlocked && index != active && tab.agent.is_some() {
                         panes.start_unseen(waker.as_ref(), now);
                     }
                     panes.poll(now, waker.as_ref())
@@ -1307,6 +1303,9 @@ impl NativeApp {
             .min_by(f64::total_cmp);
         if let Some(wait) = next_try {
             ui.request_repaint_after(std::time::Duration::from_secs_f64(wait));
+        }
+        if self.settings.close_ended_ssh_tabs {
+            self.close_exited_ssh_tabs();
         }
         let Some(vault) = self.vault.as_mut() else {
             return;
@@ -1344,6 +1343,52 @@ impl NativeApp {
             } else {
                 ui.request_repaint_after(std::time::Duration::from_secs_f64(timeout - idle));
             }
+        }
+    }
+
+    /// Closes SSH tabs whose shells exited normally. If the tab was in front, the one to its
+    /// right comes forward (or the one to its left when it was last).
+    fn close_exited_ssh_tabs(&mut self) {
+        let ended: Vec<u64> = self
+            .tabs
+            .iter()
+            .filter(|tab| {
+                tab.agent.is_none()
+                    && matches!(
+                        &tab.terminal,
+                        Some(TermView::Live(panes))
+                            if matches!(panes.focused_program(), Some(Program::Ssh { .. }))
+                                && panes.all_exited_cleanly()
+                    )
+            })
+            .map(|tab| tab.uid)
+            .collect();
+        for uid in ended {
+            self.close_exited_ssh_tab(uid);
+        }
+    }
+
+    /// Closes one automatically ended SSH tab. Its replacement is another session tab to the
+    /// right, then one to the left; with none, Vault. The fixed SFTP tab is never a fallback.
+    fn close_exited_ssh_tab(&mut self, uid: u64) {
+        let Some(index) = self.tabs.iter().position(|tab| tab.uid == uid) else {
+            return;
+        };
+        let next = (self.active == index)
+            .then(|| {
+                self.tabs[index + 1..]
+                    .iter()
+                    .find(|tab| !tab.fixed())
+                    .or_else(|| self.tabs[FIXED_TABS..index].iter().next_back())
+                    .or_else(|| self.tabs.first())
+                    .map(|tab| tab.uid)
+            })
+            .flatten();
+        self.close_tab(index);
+        if let Some(next) = next
+            && let Some(at) = self.tabs.iter().position(|tab| tab.uid == next)
+        {
+            self.active = at;
         }
     }
 
@@ -1466,6 +1511,7 @@ impl NativeApp {
             .get(self.active)
             .and_then(|tab| self.pending_approval(tab.uid));
         let mut approval_choice = None;
+        let mut elevation_choice = None;
         let picking = self
             .tabs
             .get(self.active)
@@ -1644,6 +1690,11 @@ impl NativeApp {
                 ),
                 _ => None,
             };
+            elevation_choice = match agent_action {
+                Some(control::PanelAction::Elevate) => Some((tab.uid, true)),
+                Some(control::PanelAction::CancelElevation) => Some((tab.uid, false)),
+                _ => None,
+            };
             if let (Some(log), TermView::Live(panes)) = (tab.agent.as_deref(), &mut *view) {
                 panes.mark_focused(&log.marks());
                 match agent_action {
@@ -1723,6 +1774,18 @@ impl NativeApp {
                     "Command approved"
                 } else {
                     "Command denied"
+                },
+                if approved { Tone::Done } else { Tone::Info },
+            );
+            ui.request_repaint();
+        }
+        if let Some((tab, approved)) = elevation_choice {
+            self.decide_elevation(tab, approved);
+            ui.toast(
+                if approved {
+                    "Elevation started"
+                } else {
+                    "Elevation cancelled"
                 },
                 if approved { Tone::Done } else { Tone::Info },
             );

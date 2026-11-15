@@ -7,8 +7,8 @@ use annulus_config::tokens::space;
 use annulus_ui::gfx::Canvas as _;
 use annulus_ui::gfx::{Align, Point, Rect};
 use annulus_ui::icons;
-use annulus_ui::kit::{FOCUS_REACH, Id, Role, Ui};
-use annulus_ui::widgets::{BODY_MEDIUM, CONTROL, Kind, SMALL, Tone, button_width};
+use annulus_ui::kit::{FOCUS_REACH, Id, Key, Modifiers, Role, Ui};
+use annulus_ui::widgets::{BODY_MEDIUM, CONTROL, FieldStyle, Kind, SMALL, Tone, button_width};
 
 use super::{AgentCommand, AgentLog, PendingApproval, READ_MAX, Ran};
 use crate::terminal_view::TabStatus;
@@ -37,6 +37,10 @@ pub enum PanelAction {
     Approve(u64),
     /// Refuse the held command without typing it.
     Deny(u64),
+    /// Send the password entered by the owner directly to `sudo`.
+    Elevate,
+    /// Refuse the pending elevation request.
+    CancelElevation,
 }
 
 /// Commands in the panel: monospace, a touch smaller than the terminal's.
@@ -65,7 +69,12 @@ pub fn agent_panel(
     files: bool,
 ) -> Option<PanelAction> {
     let t = ui.theme;
-    if approval.is_some() {
+    if approval.is_some()
+        || log
+            .elevation
+            .as_ref()
+            .is_some_and(|elevation| elevation.submitted.is_none())
+    {
         log.folded = false;
     }
     if log.folded {
@@ -199,6 +208,21 @@ pub fn agent_panel(
             t.line,
         );
     }
+    if let Some(elevation) = log
+        .elevation
+        .as_mut()
+        .filter(|elevation| elevation.submitted.is_none())
+    {
+        let prompt = list.take_top(154.0);
+        if let Some(choice) = elevation_prompt(ui, prompt, &mut elevation.secret) {
+            action = Some(choice);
+        }
+        ui.gfx.fill_rect(
+            Rect::new(list.x + space::M, list.y, list.w - space::M, 1.0),
+            0.0,
+            t.line,
+        );
+    }
     if log.commands.is_empty() {
         let mut empty = list.inset(space::M, space::M);
         ui.gfx.text(
@@ -229,6 +253,77 @@ pub fn agent_panel(
         action = Some(picked);
     }
     action
+}
+
+/// The password prompt for an agent's explicit `elevate` call. The field belongs to the
+/// visible agent tab and is zeroed when the request is submitted, cancelled or cut off.
+fn elevation_prompt(
+    ui: &mut Ui<'_>,
+    rect: Rect,
+    secret: &mut zeroize::Zeroizing<String>,
+) -> Option<PanelAction> {
+    let t = ui.theme;
+    let mut inner = rect.inset(space::M, space::S);
+    ui.gfx.text(
+        inner.take_top(20.0),
+        "Allow sudo access?",
+        BODY_MEDIUM,
+        t.text,
+        Align::Start,
+    );
+    ui.gfx.text(
+        inner.take_top(18.0),
+        "Type the SSH password. It stays in Annulus.",
+        SMALL,
+        t.text2,
+        Align::Start,
+    );
+    inner.take_top(space::S);
+    let field_id = Id::new("agent.elevation.password");
+    let field = ui.text_field(
+        field_id,
+        inner.take_top(CONTROL),
+        secret,
+        FieldStyle {
+            placeholder: "SSH password",
+            icon: Some(icons::KEY),
+            ..FieldStyle::default()
+        },
+    );
+    if ui.state.focus() != Some(field_id) {
+        ui.state.set_focus(Some(field_id), false);
+    }
+    inner.take_top(space::S);
+    let mut buttons = inner.take_top(CONTROL);
+    let elevate_w = button_width(&mut ui.gfx, "Elevate", Some(icons::KEY));
+    let cancel_w = button_width(&mut ui.gfx, "Cancel", None);
+    let elevate = buttons.take_right(elevate_w);
+    buttons.take_right(space::S);
+    let cancel = buttons.take_right(cancel_w);
+    if ui
+        .button(
+            Id::new("agent.elevation.cancel"),
+            cancel,
+            "Cancel",
+            None,
+            Kind::Ghost,
+        )
+        .clicked
+        || ui.key(Key::Escape, Modifiers::NONE)
+    {
+        return Some(PanelAction::CancelElevation);
+    }
+    let submitted = field.submitted
+        || ui
+            .button(
+                Id::new("agent.elevation.submit"),
+                elevate,
+                "Elevate",
+                Some(icons::KEY),
+                Kind::Primary,
+            )
+            .clicked;
+    (submitted && !secret.is_empty()).then_some(PanelAction::Elevate)
 }
 
 /// The next held command, with an explicit choice before any bytes reach the terminal.

@@ -22,6 +22,16 @@ Annulus may hold the call until the user approves the exact command. Wait for th
 do not try another path around approval. If a command stays active, use `wait`, `read`, or
 `interrupt` instead of running it again.
 
+When a command needs `sudo`, ask Annulus to elevate the agent's SSH tab:
+
+```text
+annulus-agent elevate <tab-id>
+```
+
+Annulus prompts the user to type the SSH password and sends it directly to `sudo`; the agent
+never receives it. Wait for the user to answer. Never ask them to reveal the password or try
+another route around the prompt. MCP exposes the same action as `annulus_elevate`.
+
 Copy files through a saved host with `scp` (`annulus-agent.exe` on Windows):
 
 ```text

@@ -1,4 +1,47 @@
 #[test]
+fn a_clean_ssh_exit_closes_its_tab_and_moves_to_the_next_one() {
+    let vault = fixture_vault("close-clean-ssh", true);
+    let host = vault.hosts()[0].clone();
+    let mut app = NativeApp::new(Some(vault));
+    let program = crate::connect::host(app.vault.as_ref().unwrap(), &app.ssh_files, &host);
+    let ended = app.open_terminal("ended".into(), program, None);
+    if let Some(TermView::Live(panes)) = app.tabs[app.active].terminal.as_mut() {
+        panes.finish_cleanly();
+    }
+    app.open_local();
+    for (title, program, origin) in std::mem::take(&mut app.opens) {
+        app.open_terminal(title, program, origin);
+    }
+    let next = app.tabs[app.active].uid;
+    app.active = app.tabs.iter().position(|tab| tab.uid == ended).unwrap();
+
+    let mut state = UiState::default();
+    step(&mut app, &mut state, &[], 0.0);
+
+    assert!(!app.tabs.iter().any(|tab| tab.uid == ended));
+    assert_eq!(app.tabs[app.active].uid, next);
+}
+
+#[test]
+fn a_clean_ssh_exit_falls_back_to_vault_never_the_fixed_sftp_tab() {
+    let vault = fixture_vault("close-clean-ssh-to-vault", true);
+    let host = vault.hosts()[0].clone();
+    let mut app = NativeApp::new(Some(vault));
+    let program = crate::connect::host(app.vault.as_ref().unwrap(), &app.ssh_files, &host);
+    let ended = app.open_terminal("ended".into(), program, None);
+    if let Some(TermView::Live(panes)) = app.tabs[app.active].terminal.as_mut() {
+        panes.finish_cleanly();
+    }
+
+    let mut state = UiState::default();
+    step(&mut app, &mut state, &[], 0.0);
+
+    assert!(!app.tabs.iter().any(|tab| tab.uid == ended));
+    assert_eq!(app.active, 0);
+    assert_eq!(app.tabs[app.active].kind, crate::native::TabKind::Vault);
+}
+
+#[test]
 fn an_agent_runs_a_command_through_the_door_in_its_own_tab_and_gets_its_output() {
     use annulus_control::client::Client;
     let _timed = timing_a_shell();

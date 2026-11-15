@@ -90,6 +90,12 @@ pub enum Request {
         /// The agent tab's id.
         tab: u64,
     },
+    /// Asks the owner to type the SSH password in Annulus, then refreshes `sudo` credentials
+    /// in agent tab `tab`. The password never crosses the control connection.
+    Elevate {
+        /// The agent SSH tab's id.
+        tab: u64,
+    },
     /// Closes agent tab `tab`.
     Close {
         /// The agent tab's id.
@@ -365,6 +371,13 @@ mod tests {
                 id: 4,
                 request: Request::Wait { tab: 2, wait: None }
             })
+        );
+        assert_eq!(
+            encode(&Call {
+                id: 5,
+                request: Request::Elevate { tab: 9 },
+            }),
+            r#"{"id":5,"op":"elevate","tab":9}"#
         );
         assert!(decode::<Call>(r#"{"id":1,"op":"format_disk"}"#).is_err());
     }

@@ -47,6 +47,9 @@ pub struct Settings {
     /// Reopen the terminal tabs that were open when the app closed (F-APP-008). Off by
     /// default.
     pub restore_tabs: bool,
+    /// Close an SSH terminal tab when its remote shell exits normally. A dropped connection
+    /// still follows that host's reconnect setting.
+    pub close_ended_ssh_tabs: bool,
     /// The terminal tabs open at the last save, kept while `restore_tabs` is on.
     pub open_tabs: Vec<OpenTab>,
     /// No animations: everything changes at once (UI-SPEC §8).
@@ -145,6 +148,7 @@ impl Default for Settings {
             terminal_theme: "Annulus Dark".into(),
             record_logs: false,
             restore_tabs: false,
+            close_ended_ssh_tabs: true,
             open_tabs: Vec::new(),
             reduce_motion: false,
             recent: Vec::new(),
@@ -259,6 +263,7 @@ mod tests {
             terminal_theme: "Solarized Dark".into(),
             record_logs: true,
             restore_tabs: true,
+            close_ended_ssh_tabs: false,
             open_tabs: vec![OpenTab::Local("bash".into()), OpenTab::Host(7)],
             reduce_motion: true,
             recent: vec![Recent {
@@ -294,6 +299,7 @@ mod tests {
         assert_eq!(
             (
                 loaded.approve_commands,
+                loaded.close_ended_ssh_tabs,
                 loaded.scrollback,
                 loaded.agent_tabs_in_front,
                 loaded.agents_read_my_tabs,
@@ -304,6 +310,7 @@ mod tests {
             ),
             (
                 false,
+                true,
                 DEFAULT_SCROLLBACK,
                 true,
                 true,

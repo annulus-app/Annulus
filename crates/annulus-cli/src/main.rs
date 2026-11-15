@@ -43,6 +43,8 @@ Commands:
   wait <tab> [S]                wait up to S seconds (30 by default) for the last command in
                                 your tab <tab> to finish, and print as run does
   interrupt <tab>               press Ctrl+C in your tab <tab> (a command that hangs stops)
+  elevate <tab>                 ask the owner for the SSH password in Annulus and refresh
+                                sudo access in your SSH tab (the password is never returned)
   close <tab>                   close your tab <tab>, once the owner lets agents close tabs
                                 (Settings > Agents; not by default)
   mcp                           serve these as MCP tools over stdin and stdout
@@ -87,6 +89,9 @@ enum Command {
         wait: Option<u64>,
     },
     Interrupt {
+        tab: u64,
+    },
+    Elevate {
         tab: u64,
     },
     Close {
@@ -192,6 +197,7 @@ fn parse(args: &[String]) -> Result<(Command, bool), String> {
             },
         },
         ["interrupt", tab] => Command::Interrupt { tab: tab_id(tab)? },
+        ["elevate", tab] => Command::Elevate { tab: tab_id(tab)? },
         ["close", tab] => Command::Close { tab: tab_id(tab)? },
         _ => return Err(format!("not a command: {}\n\n{USAGE}", words.join(" "))),
     };
@@ -341,6 +347,10 @@ fn run(command: Command, json: bool) -> Result<Printed, ClientError> {
         }
         Command::Interrupt { tab } => {
             client.interrupt(tab)?;
+            String::new()
+        }
+        Command::Elevate { tab } => {
+            client.elevate(tab)?;
             String::new()
         }
         Command::Close { tab } => {
@@ -493,6 +503,10 @@ mod tests {
         assert_eq!(
             parse(&args("interrupt 4")),
             Ok((Command::Interrupt { tab: 4 }, false))
+        );
+        assert_eq!(
+            parse(&args("elevate 4")),
+            Ok((Command::Elevate { tab: 4 }, false))
         );
         assert_eq!(parse(&args("mcp")), Ok((Command::Mcp, false)));
         assert_eq!(

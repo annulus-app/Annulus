@@ -880,7 +880,7 @@ impl SettingsView {
 
 fn sessions(ui: &mut Ui<'_>, page: &mut Rect, settings: &mut Settings) -> bool {
     let mut changed = false;
-    let mut card = card(ui, page, "Tabs and logs", 2);
+    let mut card = card(ui, page, "Tabs and logs", 3);
     let control = row(
         ui,
         &mut card,
@@ -897,6 +897,24 @@ fn sessions(ui: &mut Ui<'_>, page: &mut Rect, settings: &mut Settings) -> bool {
             control,
             &mut settings.restore_tabs,
             "Reopen my tabs",
+        )
+        .clicked;
+    let control = row(
+        ui,
+        &mut card,
+        false,
+        (
+            "Close SSH tabs after exit",
+            "A clean exit moves to the next tab; dropped connections still reconnect.",
+        ),
+        SWITCH_W,
+    );
+    changed |= ui
+        .switch(
+            Id::new("settings.close-ended-ssh"),
+            control,
+            &mut settings.close_ended_ssh_tabs,
+            "Close SSH tabs after exit",
         )
         .clicked;
     let control = row(

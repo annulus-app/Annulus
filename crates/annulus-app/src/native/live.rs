@@ -41,7 +41,7 @@ pub struct LiveTerminal {
     /// The title the program set, if any.
     pub title: Option<String>,
     failed: Option<String>,
-    exited: bool,
+    exit: Exit,
     ask: Option<Ask>,
     unread: Arc<AtomicBool>,
     /// A drag selection in progress, from this cell.
@@ -84,6 +84,17 @@ pub struct LiveTerminal {
     /// Lets a UI test prove that its tab-close button reached the live session.
     #[cfg(test)]
     close_probe: Option<Arc<AtomicBool>>,
+}
+
+/// Why the live program currently has no input endpoint.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Exit {
+    #[default]
+    Running,
+    /// A dropped connection is held as ended until its reconnect timer fires.
+    WaitingReconnect,
+    /// The shell reported a normal exit.
+    Clean,
 }
 
 /// Where an agent typed into a terminal (F-AUTO-004): the row each of its commands went in
@@ -250,7 +261,7 @@ impl LiveTerminal {
             grid: None,
             title: None,
             failed: None,
-            exited: false,
+            exit: Exit::Running,
             ask: None,
             unread: Arc::new(AtomicBool::new(false)),
             selecting: None,
@@ -311,7 +322,7 @@ impl LiveTerminal {
         matches!(self.program, Program::Ssh { .. })
             && self.session.is_some()
             && self.failed.is_none()
-            && !self.exited
+            && self.exit == Exit::Running
             && !self.drawn.load(Ordering::Relaxed)
     }
 
@@ -353,7 +364,7 @@ impl LiveTerminal {
         self.reconnect.at = None;
         self.session = None;
         self.failed = None;
-        self.exited = false;
+        self.exit = Exit::Running;
         self.ask = None;
         self.held_paste = None;
     }
@@ -363,7 +374,7 @@ impl LiveTerminal {
     fn dropped(&mut self, now: f64, failure: Option<String>) {
         match self.reconnect.dropped(now, failure) {
             Some(error) => self.failed = Some(error),
-            None => self.exited = true,
+            None => self.exit = Exit::WaitingReconnect,
         }
     }
 
@@ -413,7 +424,19 @@ impl LiveTerminal {
     /// Whether its program has ended (a shell that exited): typing reaches nothing.
     #[must_use]
     pub fn ended(&self) -> bool {
-        self.exited
+        self.exit != Exit::Running
+    }
+
+    /// Whether the shell ended normally (for example, because the user typed `exit`).
+    #[must_use]
+    pub fn exited_cleanly(&self) -> bool {
+        self.exit == Exit::Clean
+    }
+
+    /// Marks this stand-in session as a normal exit.
+    #[cfg(test)]
+    pub fn finish_cleanly(&mut self) {
+        self.exit = Exit::Clean;
     }
 
     /// Goes up as the program's output comes in ([`Session::output`]); 0 before it starts.
@@ -436,7 +459,7 @@ impl LiveTerminal {
         const UNSEEN_CELL: (u16, u16) = (9, 19);
         if self.session.is_none()
             && self.failed.is_none()
-            && !self.exited
+            && self.exit == Exit::Running
             && self.reconnect.at.is_none()
         {
             let cell = self.cell.unwrap_or(UNSEEN_CELL);
@@ -884,7 +907,7 @@ impl LiveTerminal {
                 }
                 SessionEvent::Bell => {}
                 SessionEvent::Exited => {
-                    self.exited = true;
+                    self.exit = Exit::Clean;
                     self.reconnect.stop();
                 }
                 SessionEvent::Lost if reconnects => self.dropped(now, None),
@@ -942,7 +965,7 @@ impl LiveTerminal {
         let held = self.held;
         #[cfg(not(test))]
         let held = false;
-        if self.session.is_none() && self.failed.is_none() && !self.exited && !held {
+        if self.session.is_none() && self.failed.is_none() && self.exit == Exit::Running && !held {
             self.start(ui, font, start_grid(grid), waker);
             ui.state.set_focus(Some(id), false);
         } else if usable(grid)
@@ -986,7 +1009,7 @@ impl LiveTerminal {
             self.mouse(ui, &session, &response, id, cell_at);
             self.session = Some(session);
         }
-        if response.focused && self.exited && self.failed.is_none() {
+        if response.focused && self.exit != Exit::Running && self.failed.is_none() {
             // Enter starts an ended session again; Escape stops a waiting reconnect.
             if ui.key(Key::Enter, Modifiers::NONE) {
                 self.restart();
@@ -1333,7 +1356,7 @@ impl LiveTerminal {
     /// start again.
     #[allow(clippy::too_many_lines)] // Three states of one bar, laid out once.
     fn ended_banner(&mut self, ui: &mut Ui<'_>, rect: Rect, id: Id) {
-        if self.failed.is_none() && !self.exited {
+        if self.failed.is_none() && self.exit == Exit::Running {
             return;
         }
         let t = ui.theme;

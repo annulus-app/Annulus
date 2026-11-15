@@ -303,6 +303,16 @@ impl server::Handler for TestServer {
                 session.eof(channel)?;
                 session.close(channel)
             }
+            b"slow-close\r" => {
+                session.exit_status_request(channel, 0)?;
+                let handle = session.handle();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    let _ = handle.eof(channel).await;
+                    let _ = handle.close(channel).await;
+                });
+                Ok(())
+            }
             // The connection drops without a word, as when the network goes away.
             b"drop\r" => Err(russh::Error::Disconnect),
             _ => session.data(channel, data.to_vec()),
@@ -656,6 +666,28 @@ async fn an_exit_is_told_apart_from_a_dropped_connection() {
         shell.write(typed.as_bytes()).await.unwrap();
         assert_eq!(end_of(&mut shell).await, expected, "after {typed:?}");
     }
+}
+
+#[tokio::test]
+async fn an_exit_is_reported_at_its_status_without_waiting_for_channel_close() {
+    let port = serve(new_key()).await;
+    let script = Script::new(true, &["secret"]);
+    let connection = connect(
+        &target(port, "alice"),
+        &known_hosts("quick-exit"),
+        None,
+        &[],
+        script,
+    )
+    .await
+    .unwrap();
+    let mut shell = connection.shell(80, 24).await.unwrap();
+    assert!(matches!(shell.next().await, Output::Data(_)), "welcome");
+    shell.write(b"slow-close\r").await.unwrap();
+    let ended = tokio::time::timeout(std::time::Duration::from_millis(250), shell.next())
+        .await
+        .expect("exit status should not wait for the delayed close");
+    assert_eq!(ended, Output::Exited);
 }
 
 #[tokio::test]

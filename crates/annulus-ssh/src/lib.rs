@@ -834,10 +834,7 @@ impl Connection {
                 .await?;
         }
         channel.request_shell(true).await?;
-        Ok(Shell {
-            channel,
-            exited: false,
-        })
+        Ok(Shell { channel })
     }
 
     /// Runs `command` without a PTY and collects what it printed (stdout and stderr) and
@@ -912,8 +909,6 @@ pub struct Exec {
 /// An interactive shell channel.
 pub struct Shell {
     channel: Channel<Msg>,
-    /// The server reported the program's exit status (or the signal that ended it).
-    exited: bool,
 }
 
 /// What came from the shell.
@@ -935,17 +930,14 @@ impl Shell {
                 Some(ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. }) => {
                     return Output::Data(data.to_vec());
                 }
+                // The status is definitive. Do not wait for the channel's final close: some
+                // servers leave it open noticeably longer after the remote shell has exited.
                 Some(ChannelMsg::ExitStatus { .. } | ChannelMsg::ExitSignal { .. }) => {
-                    self.exited = true;
+                    return Output::Exited;
                 }
-                // OpenSSH sends EOF before the exit status; the close comes last.
-                Some(ChannelMsg::Close) | None => {
-                    return if self.exited {
-                        Output::Exited
-                    } else {
-                        Output::Lost
-                    };
-                }
+                // OpenSSH may send EOF before the exit status; ignore it. A close without a
+                // status means the connection was lost.
+                Some(ChannelMsg::Close) | None => return Output::Lost,
                 Some(_) => {}
             }
         }

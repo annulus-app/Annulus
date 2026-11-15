@@ -539,6 +539,27 @@ impl Panes {
             .all(|pane| pane.terminal.ended() || pane.terminal.failure().is_some())
     }
 
+    /// Whether every pane's shell reported a normal exit, rather than a failed or dropped
+    /// connection.
+    #[must_use]
+    pub fn all_exited_cleanly(&self) -> bool {
+        self.all.iter().all(|pane| pane.terminal.exited_cleanly())
+    }
+
+    /// The program in the focused pane.
+    #[must_use]
+    pub fn focused_program(&self) -> Option<Program> {
+        self.pane(self.focused).map(|pane| pane.terminal.program())
+    }
+
+    /// Marks every stand-in pane as normally exited.
+    #[cfg(test)]
+    pub fn finish_cleanly(&mut self) {
+        for pane in &mut self.all {
+            pane.terminal.finish_cleanly();
+        }
+    }
+
     /// Whether the focused pane's program has ended (its shell exited).
     #[must_use]
     pub fn focused_ended(&self) -> bool {

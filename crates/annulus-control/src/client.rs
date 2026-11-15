@@ -213,6 +213,15 @@ impl Client {
         self.call(Request::Interrupt { tab })
     }
 
+    /// Prompts the owner in Annulus for the SSH password and refreshes `sudo` credentials in
+    /// agent tab `tab`.
+    ///
+    /// # Errors
+    /// As [`Self::call`].
+    pub fn elevate(&mut self, tab: u64) -> Result<(), ClientError> {
+        self.call(Request::Elevate { tab })
+    }
+
     /// Closes agent tab `tab`.
     ///
     /// # Errors

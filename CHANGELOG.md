@@ -2,6 +2,22 @@
 
 Notable changes to Annulus, newest first. Versions follow [Semantic Versioning](https://semver.org). Until 1.0, a minor version may change the vault or the sync protocol, and its notes will say how to move across.
 
+## 0.2.0 (2026-11-17)
+
+### Terminal and SSH
+
+- Open and switch between local terminal tabs while the vault is locked. The plus button opens your default local shell, and vault-backed tabs stay hidden until you unlock.
+- Selecting a terminal tab puts keyboard focus back in its last active pane so you can type right away.
+- SSH tabs close on a clean exit and select the next session. You can turn this off in Settings under Sessions. Dropped connections still follow their reconnect settings.
+
+### Agent access
+
+- An agent can request `sudo` in its SSH tab through `annulus-agent elevate` or the `annulus_elevate` MCP tool. Annulus asks you for the SSH password and sends it directly to `sudo`. The agent never receives it.
+
+### Windows downloads
+
+- The Windows x64 installer, portable client, and separate sync server are available for this release. The binaries are unsigned.
+
 ## 0.1.0 (2026-11-11)
 
 The first public version. This release has the Windows downloads; the macOS and Linux ones follow. Builds aren't signed yet.

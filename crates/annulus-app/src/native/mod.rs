@@ -190,6 +190,12 @@ impl Tab {
     pub fn fixed(&self) -> bool {
         matches!(self.kind, TabKind::Vault | TabKind::Files)
     }
+
+    fn available(&self, locked: bool) -> bool {
+        !locked
+            || self.kind == TabKind::Vault
+            || (matches!(self.origin, Some(OpenTab::Local(_))) && self.agent.is_none())
+    }
 }
 
 /// What a terminal tab shows.
@@ -243,6 +249,8 @@ pub struct NativeApp {
     switched: Option<(f64, f32)>,
     /// When the vault opened, while the lock screen is still leaving.
     lock_left: Option<f64>,
+    /// How many fixed tabs the tab strip can show with the current vault access.
+    fixed_tab_count: usize,
     /// The section drawn last frame.
     section_drawn: Section,
     /// The section just left and when, while it fades out.
@@ -348,6 +356,7 @@ impl NativeApp {
             front: (None, 0),
             switched: None,
             lock_left: None,
+            fixed_tab_count: if vault.is_none() { 1 } else { FIXED_TABS },
             section_drawn: Section::Hosts,
             section_left: None,
             tab_places: Vec::new(),
@@ -415,15 +424,15 @@ impl NativeApp {
         }
     }
 
-    /// Closes every session tab but tab `uid`, or (`right_only`) only those to its right; `uid`
-    /// is then in front.
+    /// Closes the other available session tabs, or (`right_only`) those to the right of
+    /// tab `uid`; `uid` is then in front.
     pub fn close_others(&mut self, uid: u64, right_only: bool) {
         let Some(at) = self.tabs.iter().position(|tab| tab.uid == uid) else {
             return;
         };
         let from = if right_only { at + 1 } else { FIXED_TABS };
         for index in (from..self.tabs.len()).rev() {
-            if self.tabs[index].uid != uid {
+            if self.tabs[index].uid != uid && self.tabs[index].available(self.vault.is_none()) {
                 self.close_tab(index);
             }
         }
@@ -496,8 +505,12 @@ impl NativeApp {
         });
     }
 
-    /// Opens a New Tab page in front, its search taking the keyboard (+, Ctrl+Shift+T).
+    /// Opens the New Tab picker, or a local shell while the vault is locked.
     pub fn open_new_tab(&mut self) {
+        if self.vault.is_none() {
+            self.open_local();
+            return;
+        }
         let uid = self.take_uid();
         self.tabs.push(Tab {
             start: Some(Box::default()),
@@ -541,13 +554,14 @@ impl NativeApp {
             Vec::new()
         };
         self.save_logs(logs);
-        let was_front = self.active == index;
-        if self.active >= index {
-            self.active = self.active.saturating_sub(1);
-        }
-        // The last session closed: back to the vault rather than onto the SFTP picker.
-        if was_front && self.active < FIXED_TABS {
-            self.active = 0;
+        if self.active == index {
+            // Select the nearest available session on the left, with Vault as the fallback.
+            self.active = (FIXED_TABS..index)
+                .rev()
+                .find(|&at| self.tabs[at].available(self.vault.is_none()))
+                .unwrap_or(0);
+        } else if self.active > index {
+            self.active -= 1;
         }
     }
 
@@ -731,20 +745,34 @@ impl NativeApp {
             .push((title.clone(), program, Some(OpenTab::Local(title))));
     }
 
+    /// The tab strip's order, with vault-backed tabs hidden while locked.
+    fn available_tabs(&self) -> impl Iterator<Item = usize> + '_ {
+        let locked = self.vault.is_none();
+        self.tabs
+            .iter()
+            .enumerate()
+            .filter(move |(_, tab)| tab.available(locked))
+            .map(|(index, _)| index)
+    }
+
     /// The tab, zoom and app shortcuts (UI-SPEC §7, [`shortcuts`]), taken before the screen in
     /// front sees the keys.
     fn app_shortcuts(&mut self, ui: &mut Ui<'_>) {
-        let count = self.tabs.len();
-        if shortcuts::NEXT_TAB.pressed(ui) && count > 0 {
-            self.active = (self.active + 1) % count;
-        }
-        if shortcuts::PREVIOUS_TAB.pressed(ui) && count > 0 {
-            self.active = (self.active + count - 1) % count;
+        let tabs: Vec<_> = self.available_tabs().collect();
+        let count = tabs.len();
+        if let Some(mut at) = tabs.iter().position(|&index| index == self.active) {
+            if shortcuts::NEXT_TAB.pressed(ui) {
+                at = (at + 1) % count;
+            }
+            if shortcuts::PREVIOUS_TAB.pressed(ui) {
+                at = (at + count - 1) % count;
+            }
+            self.active = tabs[at];
         }
         // Alt+1 to Alt+9 (Cmd on a Mac): the tab at that place.
         for (place, digit) in ('1'..='9').enumerate() {
             if shortcuts::GO_TO_TAB.pressed_with(ui, Key::Char(digit)) && place < count {
-                self.active = place;
+                self.active = tabs[place];
             }
         }
         if shortcuts::NEW_TAB.pressed(ui) {
@@ -753,21 +781,30 @@ impl NativeApp {
         if shortcuts::LOCAL.pressed(ui) {
             self.open_local();
         }
-        // The tab in front, one place left or right (as dragging it would).
-        if shortcuts::MOVE_LEFT.pressed(ui)
-            && let Some(to) = self.active.checked_sub(1)
-        {
-            self.move_tab(self.active, to);
+        // Move relative to the tabs on the strip, skipping hidden sessions.
+        for (shortcut, offset) in [(shortcuts::MOVE_LEFT, -1), (shortcuts::MOVE_RIGHT, 1)] {
+            if shortcut.pressed(ui)
+                && let Some(target) = self
+                    .available_tabs()
+                    .collect::<Vec<_>>()
+                    .windows(2)
+                    .find_map(|pair| match offset {
+                        -1 if pair[1] == self.active => Some(pair[0]),
+                        1 if pair[0] == self.active => Some(pair[1]),
+                        _ => None,
+                    })
+            {
+                self.move_tab(self.active, target);
+            }
         }
-        if shortcuts::MOVE_RIGHT.pressed(ui) {
-            self.move_tab(self.active, self.active + 1);
-        }
-        if shortcuts::SETTINGS.pressed(ui) {
-            self.show_settings();
-        }
-        if shortcuts::LOCK.pressed(ui) {
-            self.lock_vault();
-            return;
+        if self.vault.is_some() {
+            if shortcuts::SETTINGS.pressed(ui) {
+                self.show_settings();
+            }
+            if shortcuts::LOCK.pressed(ui) {
+                self.lock_vault();
+                return;
+            }
         }
         let size = self.settings.font_size;
         // Within the sizes Settings lists, so it always shows the size in use.
@@ -1393,7 +1430,7 @@ impl NativeApp {
     }
 
     /// Locks the vault: its keys, decrypted entities, drafts and typed passwords go, and so do
-    /// the secrets open tabs hold for reconnecting; the tabs stay out of sight until unlock.
+    /// the secrets open tabs hold for reconnecting.
     pub fn lock_vault(&mut self) {
         for tab in &mut self.tabs {
             if let Some(TermView::Live(panes)) = &mut tab.terminal {
@@ -1405,9 +1442,13 @@ impl NativeApp {
         }
         self.palette = None;
         self.palette_focus = None;
+        self.settings_view.picker = None;
+        self.settings_view.theme_focus = None;
+        self.snippet_panel = None;
         self.vault = None;
-        // Nothing drives the app while it is locked: the door closes now, not next frame, and
-        // no waiting command is typed later.
+        self.lock_left = None;
+        self.tab_grab = None;
+        // Cut off agent control and pending commands as soon as the vault locks.
         self.door = None;
         self.door_failed = false;
         self.cut_runs(std::time::Instant::now());
@@ -1463,12 +1504,16 @@ impl NativeApp {
         let mut area = ui.viewport;
         ui.gfx.fill_rect(area, 0.0, t.chrome);
         let bar = area.take_top(TITLE_H);
-        // Locked: the lock screen is all there is (sessions keep running out of sight).
-        let locked = self.vault.is_none();
-        if locked {
+        self.background(ui);
+        self.poll_lock(ui.time());
+        if self
+            .tabs
+            .get(self.active)
+            .is_none_or(|tab| !tab.available(self.vault.is_none()))
+        {
             self.active = 0;
         }
-        self.background(ui);
+        let locked = self.vault.is_none();
         if self.control() {
             // A command's output is settling: look again soon.
             ui.request_repaint_after(std::time::Duration::from_millis(100));
@@ -1500,11 +1545,15 @@ impl NativeApp {
             ui.push_inert();
         }
         let for_palette = self.palette.as_ref().map(|_| ui.take_typed());
-        let action = titlebar::draw(self, ui, bar);
-        if !locked {
-            self.app_shortcuts(ui);
-            self.pane_shortcuts(ui);
+        self.app_shortcuts(ui);
+        let locked = self.vault.is_none();
+        let fixed = if locked { 1 } else { FIXED_TABS };
+        if fixed != self.fixed_tab_count {
+            ui.state.clear_menus();
+            self.fixed_tab_count = fixed;
         }
+        let action = titlebar::draw(self, ui, bar);
+        self.pane_shortcuts(ui);
         let kind = self.tabs.get(self.active).map(|tab| tab.kind);
         let active_approval = self
             .tabs
@@ -1547,7 +1596,6 @@ impl NativeApp {
             }
             let content = panel(ui, area);
             if self.vault.is_none() {
-                self.poll_lock(ui.time());
                 match self.lock.draw(ui, content) {
                     Some(lock::LockAction::Confirmed) => {
                         self.vault = self.lock.take_vault();
@@ -1556,7 +1604,6 @@ impl NativeApp {
                     Some(action) => self.open_vault(ui, action),
                     None => {}
                 }
-                ui.request_repaint_if(self.lock.working.is_some());
             } else {
                 self.section_screen(ui, content);
                 self.lock_leaving(ui, content);
@@ -1661,7 +1708,7 @@ impl NativeApp {
             );
             let mut area = area;
             area.take_left(PANEL_GAP);
-            if shortcuts::SNIPPETS.pressed(ui) {
+            if !locked && shortcuts::SNIPPETS.pressed(ui) {
                 self.snippet_panel = match self.snippet_panel.take() {
                     Some(_) => None,
                     None => Some(String::new()),
@@ -1767,6 +1814,7 @@ impl NativeApp {
             // A terminal tab always holds a terminal; an empty panel is never more than a frame.
             panel(ui, area);
         }
+        ui.request_repaint_if(self.lock.working.is_some());
         if let Some((id, approved)) = approval_choice {
             self.decide_approval(id, approved);
             ui.toast(
@@ -1870,6 +1918,7 @@ impl NativeApp {
     fn tab_switch(&mut self, ui: &Ui<'_>) -> Option<(f32, f32)> {
         let uid = self.tabs.get(self.active).map(|tab| tab.uid);
         if uid != self.front.0 {
+            self.focus_active_terminal();
             if self.front.0.is_some() && !ui.state.reduce_motion && self.vault.is_some() {
                 let side = if self.active >= self.front.1 {
                     1.0
@@ -1888,6 +1937,17 @@ impl NativeApp {
             return None;
         }
         Some((Curve::Emphasized.at(share), side))
+    }
+
+    /// Returns keyboard focus to the last focused pane of the active terminal tab.
+    fn focus_active_terminal(&mut self) {
+        if let Some(TermView::Live(panes)) = self
+            .tabs
+            .get_mut(self.active)
+            .and_then(|tab| tab.terminal.as_mut())
+        {
+            panes.refocus();
+        }
     }
 
     /// The lock screen on its way out, over the vault coming in.

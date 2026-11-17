@@ -814,6 +814,13 @@ impl UiState {
         self.focus_ring = ring && id.is_some();
     }
 
+    /// Drops open menus and their exit animations when their contents are no longer visible.
+    pub fn clear_menus(&mut self) {
+        self.popup = None;
+        self.menu_on_screen = None;
+        self.menu_leaving = None;
+    }
+
     /// Text a field asked to copy (Ctrl+C / Ctrl+X); the window puts it on the clipboard.
     pub fn take_clipboard(&mut self) -> Option<String> {
         self.take_copied().map(|(text, _)| text)

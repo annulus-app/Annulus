@@ -229,38 +229,115 @@ fn a_tag_is_deleted_from_every_host_only_after_a_yes() {
 }
 
 #[test]
-fn a_locked_vault_hides_every_open_tab_and_the_palette() {
+fn a_locked_vault_allows_local_tabs_and_hides_vault_sessions() {
     let mut app = NativeApp::new(Some(fixture_vault("locked-tabs", true)));
-    replay(&mut app, "web-1 session");
+    app.profiles.clear();
     let mut state = UiState::default();
-    step(&mut app, &mut state, &[], 0.0);
+    app.open_local();
+    drive(&mut app, &mut state, &[], 0.0);
+    let first = app.tabs[app.active].uid;
+    replay(&mut app, "web-1 session");
+    let hidden = app.tabs[app.active].uid;
+    for index in 0..12 {
+        replay(&mut app, &format!("host session {index}"));
+    }
+    app.active = 0;
+    let output = step(&mut app, &mut state, &[], 0.5);
+    step(&mut app, &mut state, &click_on(&output, "All tabs"), 0.75);
+    assert!(state.zones().iter().any(|zone| zone.role == Role::MenuItem));
     app.lock_vault();
-    let mut output = step(&mut app, &mut state, &[], 1.0);
-    let names: Vec<&str> = output
+    let output = step(&mut app, &mut state, &[], 1.0);
+    let names: Vec<_> = output
         .zones
         .iter()
+        .filter(|zone| zone.role == Role::Tab)
         .map(|zone| zone.label.as_str())
         .collect();
-    assert!(!names.contains(&"web-1 session"), "{names:?}");
-    assert!(
-        !names.contains(&"New tab") && !names.contains(&"SFTP"),
-        "no new tab while locked"
+    assert_eq!(names, ["Vault", "Local"]);
+    assert!(!output.zones.iter().any(|zone| zone.role == Role::MenuItem));
+    assert!(output.zones.iter().any(|zone| zone.label.contains("password")));
+
+    step(&mut app, &mut state, &[chord(shortcuts::PALETTE)], 2.0);
+    assert!(app.palette.is_none());
+    let output = step(
+        &mut app,
+        &mut state,
+        &click_on(&output, "New local terminal"),
+        3.0,
     );
-    for keys in [
-        vec![chord(shortcuts::NEXT_TAB)],
-        vec![chord(shortcuts::PALETTE)],
-        vec![chord(shortcuts::NEW_TAB)],
-    ] {
-        output = step(&mut app, &mut state, &keys, 2.0);
-        assert_eq!(app.active, 0, "the lock screen stays in front");
-        assert!(app.palette.is_none() && app.opens.is_empty());
+    let second = app.tabs[app.active].uid;
+    assert_ne!(first, second);
+    assert!(matches!(app.tabs[app.active].origin, Some(OpenTab::Local(_))));
+    assert!(output.zones.iter().any(|zone| zone.role == Role::Terminal));
+
+    step(&mut app, &mut state, &[chord(shortcuts::PREVIOUS_TAB)], 4.0);
+    assert_eq!(app.tabs[app.active].uid, first);
+    assert_eq!(
+        state.focus(),
+        Some(annulus_ui::kit::Id::new(("terminal", first, 1_u64)))
+    );
+    let output = step(&mut app, &mut state, &[chord(shortcuts::NEXT_TAB)], 5.0);
+    assert_eq!(app.tabs[app.active].uid, second);
+    let output = step(&mut app, &mut state, &click_on(&output, "Vault"), 6.0);
+    assert_eq!(app.active, 0);
+    assert!(output.zones.iter().any(|zone| zone.label.contains("password")));
+
+    step(&mut app, &mut state, &[chord(shortcuts::NEW_TAB)], 7.0);
+    assert_eq!(app.available_tabs().count(), 4);
+    assert!(matches!(app.tabs[app.active].origin, Some(OpenTab::Local(_))));
+    app.close_others(first, false);
+    assert_eq!(app.available_tabs().count(), 2);
+    assert_eq!(app.tabs[app.active].uid, first);
+
+    step(&mut app, &mut state, &[chord(shortcuts::LOCAL)], 8.0);
+    assert_eq!(app.available_tabs().count(), 3);
+    step(&mut app, &mut state, &[chord(shortcuts::CLOSE)], 9.0);
+    assert_eq!(app.tabs[app.active].uid, first);
+    assert!(app.tabs.iter().any(|tab| tab.uid == hidden));
+    assert!(app.vault.is_none());
+}
+
+#[test]
+fn the_locked_tab_strip_can_open_a_local_terminal_by_keyboard() {
+    let mut app = NativeApp::new(None);
+    app.profiles.clear();
+    let mut state = UiState::default();
+    let mut output = step(&mut app, &mut state, &[], 0.0);
+    let plus = output
+        .zones
+        .iter()
+        .find(|zone| zone.label == "New local terminal")
+        .unwrap()
+        .id;
+    let tab = [Event::Key(Key::Tab, Modifiers::NONE)];
+    for frame in 1..=output.zones.len() {
+        if state.focus() == Some(plus) {
+            break;
+        }
+        #[allow(clippy::cast_precision_loss)] // A small number of controls.
+        let time = frame as f64;
+        output = drive(&mut app, &mut state, &tab, time);
     }
-    assert!(
-        output
-            .zones
-            .iter()
-            .any(|zone| zone.label.contains("password"))
-    );
+    assert_eq!(state.focus(), Some(plus));
+    assert_eq!(output.cut_rings, Vec::<Rect>::new());
+    let tree = annulus_ui::access::tree(&output.zones, state.focus(), 1.0, "Annulus");
+    let (button, node) = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("New local terminal"))
+        .unwrap();
+    assert_eq!(node.role(), annulus_ui::access::accesskit::Role::Button);
+    assert_eq!(tree.focus, *button);
+    assert!(tree.nodes.iter().any(|(_, node)| {
+        node.label() == Some("Vault") && node.role() == annulus_ui::access::accesskit::Role::Tab
+    }));
+
+    let enter = [Event::Key(Key::Enter, Modifiers::NONE)];
+    step(&mut app, &mut state, &enter, 60.0);
+    let terminal = &app.tabs[app.active];
+    assert!(matches!(terminal.origin, Some(OpenTab::Local(_))));
+    assert_eq!(state.focused_role(), Some(Role::Terminal));
+    assert!(app.vault.is_none());
 }
 
 #[test]

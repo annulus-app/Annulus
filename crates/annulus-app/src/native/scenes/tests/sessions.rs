@@ -896,6 +896,33 @@ fn a_new_split_glides_in_with_its_bar_and_settles() {
 }
 
 #[test]
+fn selecting_a_terminal_tab_focuses_its_last_active_pane() {
+    let mut app = NativeApp::new(Some(fixture_vault("tab-focus", false)));
+    split_tab(&mut app);
+    let uid = app.tabs[app.active].uid;
+    let terminal = |pane: u64| annulus_ui::kit::Id::new(("terminal", uid, pane));
+    let mut state = UiState::default();
+    let output = step(&mut app, &mut state, &[], 0.0);
+    let pane = output.zones.iter().find(|zone| zone.id == terminal(4)).unwrap();
+    step(&mut app, &mut state, &click_on(&output, &pane.label), 1.0);
+    assert_eq!(state.focus(), Some(terminal(4)));
+
+    let output = step(&mut app, &mut state, &[chord(shortcuts::NEXT_TAB)], 2.0);
+    assert_eq!(app.active, 0);
+    let tab = output
+        .zones
+        .iter()
+        .find(|zone| zone.id == annulus_ui::kit::Id::new(("tab", uid)))
+        .unwrap();
+    step(&mut app, &mut state, &click_on(&output, &tab.label), 3.0);
+    assert_eq!(state.focus(), Some(terminal(4)));
+
+    step(&mut app, &mut state, &[chord(shortcuts::NEXT_TAB)], 4.0);
+    step(&mut app, &mut state, &[chord(shortcuts::PREVIOUS_TAB)], 5.0);
+    assert_eq!(state.focus(), Some(terminal(4)));
+}
+
+#[test]
 fn focus_mode_and_broadcast_are_a_click_or_a_shortcut_away() {
     let mut app = NativeApp::new(Some(fixture_vault("split-panes", false)));
     split_tab(&mut app);

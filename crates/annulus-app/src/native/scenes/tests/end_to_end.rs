@@ -447,7 +447,7 @@ fn the_palette_lists_every_page_and_opens_host_and_key_editors() {
 
 #[test]
 fn the_fixed_tabs_cannot_be_closed_and_closing_moves_focus_left() {
-    let mut app = NativeApp::new(None);
+    let mut app = NativeApp::new(Some(fixture_vault("close-tabs", false)));
     replay(&mut app, "a");
     replay(&mut app, "b");
     app.close_tab(0);

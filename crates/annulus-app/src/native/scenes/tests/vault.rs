@@ -298,6 +298,49 @@ fn a_locked_vault_allows_local_tabs_and_hides_vault_sessions() {
 }
 
 #[test]
+fn the_locked_tab_strip_can_open_a_local_terminal_by_keyboard() {
+    let mut app = NativeApp::new(None);
+    app.profiles.clear();
+    let mut state = UiState::default();
+    let mut output = step(&mut app, &mut state, &[], 0.0);
+    let plus = output
+        .zones
+        .iter()
+        .find(|zone| zone.label == "New local terminal")
+        .unwrap()
+        .id;
+    let tab = [Event::Key(Key::Tab, Modifiers::NONE)];
+    for frame in 1..=output.zones.len() {
+        if state.focus() == Some(plus) {
+            break;
+        }
+        #[allow(clippy::cast_precision_loss)] // A small number of controls.
+        let time = frame as f64;
+        output = drive(&mut app, &mut state, &tab, time);
+    }
+    assert_eq!(state.focus(), Some(plus));
+    assert_eq!(output.cut_rings, Vec::<Rect>::new());
+    let tree = annulus_ui::access::tree(&output.zones, state.focus(), 1.0, "Annulus");
+    let (button, node) = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("New local terminal"))
+        .unwrap();
+    assert_eq!(node.role(), annulus_ui::access::accesskit::Role::Button);
+    assert_eq!(tree.focus, *button);
+    assert!(tree.nodes.iter().any(|(_, node)| {
+        node.label() == Some("Vault") && node.role() == annulus_ui::access::accesskit::Role::Tab
+    }));
+
+    let enter = [Event::Key(Key::Enter, Modifiers::NONE)];
+    step(&mut app, &mut state, &enter, 60.0);
+    let terminal = &app.tabs[app.active];
+    assert!(matches!(terminal.origin, Some(OpenTab::Local(_))));
+    assert_eq!(state.focused_role(), Some(Role::Terminal));
+    assert!(app.vault.is_none());
+}
+
+#[test]
 fn locking_drops_the_secrets_open_tabs_hold_and_unlocking_brings_them_back() {
     let mut vault = fixture_vault("locked-secrets", false);
     let mut host = vault.draft_host();

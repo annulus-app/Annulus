@@ -20,6 +20,8 @@ ignore = [
     # NIST-curve suites. Our suite is ristretto255 (curve25519-dalek), so no crypto-bigint
     # arithmetic runs on secrets; the fix exists only in 0.7, which opaque-ke 4.0 cannot use.
     { id = "RUSTSEC-2026-0387", reason = "opaque-ke uses ristretto255, not crypto-bigint curves" },
+    # Remove once russh-sftp, russh-util and zxcvbn no longer pull in chrono.
+    { id = "RUSTSEC-2026-0543", reason = "maintenance advisory for transitive chrono; no patched release" },
 ]
 
 [licenses]

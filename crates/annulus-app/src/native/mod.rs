@@ -1870,6 +1870,7 @@ impl NativeApp {
     fn tab_switch(&mut self, ui: &Ui<'_>) -> Option<(f32, f32)> {
         let uid = self.tabs.get(self.active).map(|tab| tab.uid);
         if uid != self.front.0 {
+            self.focus_active_terminal();
             if self.front.0.is_some() && !ui.state.reduce_motion && self.vault.is_some() {
                 let side = if self.active >= self.front.1 {
                     1.0
@@ -1888,6 +1889,17 @@ impl NativeApp {
             return None;
         }
         Some((Curve::Emphasized.at(share), side))
+    }
+
+    /// Returns keyboard focus to the last focused pane of the active terminal tab.
+    fn focus_active_terminal(&mut self) {
+        if let Some(TermView::Live(panes)) = self
+            .tabs
+            .get_mut(self.active)
+            .and_then(|tab| tab.terminal.as_mut())
+        {
+            panes.refocus();
+        }
     }
 
     /// The lock screen on its way out, over the vault coming in.

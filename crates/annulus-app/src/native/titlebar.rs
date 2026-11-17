@@ -99,7 +99,10 @@ pub fn draw(app: &mut NativeApp, ui: &mut Ui<'_>, bar: Rect) -> Option<WindowAct
         let place = Id::new(("tab", app.tabs[index].uid)).with("x");
         let at = ui.spring(place, slot.x);
         match tab(ui, *slot, at, app, index) {
-            TabEvent::Select => app.active = index,
+            TabEvent::Select => {
+                app.active = index;
+                app.focus_active_terminal();
+            }
             TabEvent::Close | TabEvent::Menu(0) => close_tab = Some(index),
             TabEvent::Menu(1) => close_others = Some((app.tabs[index].uid, true)),
             TabEvent::Menu(_) => close_others = Some((app.tabs[index].uid, false)),
@@ -142,6 +145,7 @@ pub fn draw(app: &mut NativeApp, ui: &mut Ui<'_>, bar: Rect) -> Option<WindowAct
             let more = Rect::new(slot.r() + 2.0, slot.y, 30.0, 30.0);
             if let Some(index) = all_tabs(app, ui, more, slots.len()) {
                 app.active = index;
+                app.focus_active_terminal();
             }
         }
     }

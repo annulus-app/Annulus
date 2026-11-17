@@ -771,6 +771,11 @@ impl Panes {
         }
     }
 
+    /// Gives the active pane keyboard focus the next time it can take input.
+    pub(super) fn refocus(&mut self) {
+        self.refocus = true;
+    }
+
     /// Draws every pane into `rect`; `pane_id` names a pane's zone. Pane 0 never exists, so
     /// its id is the base of the tab's own controls.
     pub fn draw(
@@ -804,7 +809,7 @@ impl Panes {
         {
             self.focused = *id;
         }
-        if std::mem::take(&mut self.refocus) {
+        if !ui.inert() && std::mem::take(&mut self.refocus) {
             ui.state.set_focus(Some(pane_id(self.focused)), false);
         }
         // Into focus mode, out of it or to another pane in it: the panes settle in place.

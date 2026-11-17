@@ -13,7 +13,7 @@ use annulus_ui::mark;
 use annulus_ui::motion::{Layer, Motion};
 use annulus_ui::widgets::{BODY, BODY_MEDIUM};
 
-use super::{FIXED_TABS, NativeApp, SyncBadge, TabKind, WindowAction, WindowButtons};
+use super::{NativeApp, SyncBadge, TabKind, WindowAction, WindowButtons};
 use crate::terminal_view::TabStatus;
 
 /// The zone of the title bar's empty space: dragging it moves the window.
@@ -50,50 +50,49 @@ pub fn draw(app: &mut NativeApp, ui: &mut Ui<'_>, bar: Rect) -> Option<WindowAct
     row.take_left(space::M);
 
     let mut close_tab = None;
-    // While the vault is locked, open sessions stay out of sight and out of reach.
     let locked = app.vault.is_none();
-    let shown = if locked {
-        1.min(app.tabs.len())
-    } else {
-        app.tabs.len()
-    };
+    let fixed = app.fixed_tab_count;
+    let mut tabs: Vec<_> = app.available_tabs().collect();
     // Where each tab belongs, left to right. Tabs glide to their places (a tab closed, moved
     // or renamed), but take clicks in them, so what is clicked never moves under the pointer.
-    let mut layout = slots_for(app, ui, row, shown, 0.0);
+    let mut layout = slots_for(app, ui, row, &tabs, fixed, 0.0);
     // More tabs than the strip holds: the ones past its end wait in the all-tabs menu, and
     // the tab in front is always on the strip, in its last place.
-    let overflow = layout.0.len() < shown;
+    let overflow = layout.0.len() < tabs.len();
     if overflow {
-        layout = slots_for(app, ui, row, shown, MORE_W);
+        layout = slots_for(app, ui, row, &tabs, fixed, MORE_W);
         let last = layout.0.len().saturating_sub(1);
-        if app.active > last && last >= FIXED_TABS {
-            app.move_tab(app.active, last);
+        if last >= fixed && tabs[..=last].iter().all(|&index| index != app.active) {
+            app.move_tab(app.active, tabs[last]);
+            tabs = app.available_tabs().collect();
         }
     }
     let (slots, x) = layout;
     // Where each tab is: a host connecting flies to its tab.
     app.tab_places.clear();
     app.tab_places.extend(
-        app.tabs
-            .iter()
+        tabs.iter()
             .zip(&slots)
-            .map(|(tab, slot)| (tab.uid, *slot)),
+            .map(|(&index, slot)| (app.tabs[index].uid, *slot)),
     );
-    if slots.len() > FIXED_TABS {
+    if slots.len() > fixed {
         // The fixed tabs, then a hairline, then the sessions.
         let line = Rect::new(
-            slots[FIXED_TABS].x - DIVIDER / 2.0 - 1.0,
+            slots[fixed].x - DIVIDER / 2.0 - 1.0,
             row.center().y - 9.0,
             1.0,
             18.0,
         );
         ui.gfx.fill_rect(line, 0.0, ui.theme.line_strong);
     }
-    let dragged = drag_tab(app, ui, &slots);
+    let dragged = drag_tab(app, ui, &slots, &tabs, fixed);
+    if dragged.is_some() {
+        tabs = app.available_tabs().collect();
+    }
     // A context menu's "close the others": the tab kept, and whether only those to its right go.
     let mut close_others = None;
-    for (index, slot) in slots.iter().enumerate() {
-        if dragged.is_some_and(|(at, _)| at == index) {
+    for (place, (&index, slot)) in tabs.iter().zip(&slots).enumerate() {
+        if dragged.is_some_and(|(at, _)| at == place) {
             continue;
         }
         let place = Id::new(("tab", app.tabs[index].uid)).with("x");
@@ -114,42 +113,44 @@ pub fn draw(app: &mut NativeApp, ui: &mut Ui<'_>, bar: Rect) -> Option<WindowAct
             TabEvent::None => {}
         }
     }
+    // The dragged tab last, over its neighbours.
+    if let Some((place, at)) = dragged
+        && let TabEvent::Close = tab(ui, slots[place], at, app, tabs[place])
+    {
+        close_tab = Some(tabs[place]);
+    }
+    let slot = Rect::new(x + space::XS, row.center().y - 15.0, 30.0, 30.0);
+    // It glides left as a tab closes; when one opens it is at once out of the new tab's
+    // way, which grows where it was.
+    let id = Id::new("tab.new");
+    let place = id.with("x");
+    let mut at = ui.spring(place, slot.x);
+    if at < slot.x - 0.5 {
+        ui.spring_set(place, slot.x);
+        at = slot.x;
+    }
+    let (label, shortcut) = if locked {
+        ("New local terminal", super::shortcuts::LOCAL)
+    } else {
+        ("New tab", super::shortcuts::NEW_TAB)
+    };
+    let response = ui.zone(id, slot, Role::Button, label);
+    let tip = format!("{label} ({})", shortcut.keys());
+    ui.tooltip(id, slot, &tip);
+    plus_button(ui, Rect::new(at, slot.y, slot.w, slot.h), &response);
+    if response.clicked {
+        app.open_new_tab();
+    }
+    if overflow {
+        let more = Rect::new(slot.r() + 2.0, slot.y, 30.0, 30.0);
+        if let Some(index) = all_tabs(app, ui, more, &tabs, slots.len()) {
+            app.active = index;
+            app.focus_active_terminal();
+        }
+    }
     if let Some((keep, right_only)) = close_others {
         app.close_others(keep, right_only);
-    }
-    // The dragged tab last, over its neighbours.
-    if let Some((index, at)) = dragged
-        && let TabEvent::Close = tab(ui, slots[index], at, app, index)
-    {
-        close_tab = Some(index);
-    }
-    if !locked {
-        let slot = Rect::new(x + space::XS, row.center().y - 15.0, 30.0, 30.0);
-        // It glides left as a tab closes; when one opens it is at once out of the new tab's
-        // way, which grows where it was.
-        let place = Id::new("tab.new").with("x");
-        let mut at = ui.spring(place, slot.x);
-        if at < slot.x - 0.5 {
-            ui.spring_set(place, slot.x);
-            at = slot.x;
-        }
-        let id = Id::new("tab.new");
-        let response = ui.zone(id, slot, Role::Button, "New tab");
-        let tip = format!("New tab ({})", super::shortcuts::NEW_TAB.keys());
-        ui.tooltip(id, slot, &tip);
-        plus_button(ui, Rect::new(at, slot.y, slot.w, slot.h), &response);
-        if response.clicked {
-            app.open_new_tab();
-        }
-        if overflow {
-            let more = Rect::new(slot.r() + 2.0, slot.y, 30.0, 30.0);
-            if let Some(index) = all_tabs(app, ui, more, slots.len()) {
-                app.active = index;
-                app.focus_active_terminal();
-            }
-        }
-    }
-    if let Some(index) = close_tab {
+    } else if let Some(index) = close_tab {
         app.close_tab(index);
     }
     action
@@ -198,21 +199,23 @@ const MORE_W: f32 = 32.0;
 /// The narrowest a session tab gets when many share the strip.
 const MIN_TAB: f32 = 96.0;
 
-/// The places of the first `shown` tabs of `app` in `row`, with `reserve` kept at the end
+/// The places of the given tabs in `row`, with `reserve` kept at the end
 /// besides the + button: as many as fit, and the x where the + button goes after them.
 fn slots_for(
     app: &NativeApp,
     ui: &mut Ui<'_>,
     row: Rect,
-    shown: usize,
+    tabs: &[usize],
+    fixed: usize,
     reserve: f32,
 ) -> (Vec<Rect>, f32) {
     let end = row.r() - PLUS_W - space::S - reserve;
-    let mut slots: Vec<Rect> = Vec::with_capacity(shown);
+    let mut slots: Vec<Rect> = Vec::with_capacity(tabs.len());
     // The Vault tab holds the sync mark too, while the vault syncs with a server.
     let syncs = app.sync_badge() != SyncBadge::Local;
-    let wanted: Vec<f32> = (0..shown)
-        .map(|index| {
+    let wanted: Vec<f32> = tabs
+        .iter()
+        .map(|&index| {
             let width = tab_width(ui, &app.tabs[index]);
             if index == 0 && syncs {
                 width + CLOUD_W
@@ -223,26 +226,18 @@ fn slots_for(
         .collect();
     // Too many sessions for the strip: they share it evenly, down to a narrowest width,
     // rather than the last one shrinking to nothing.
-    let fixed: f32 = wanted
-        .iter()
-        .take(FIXED_TABS)
-        .map(|width| width + 2.0)
-        .sum();
-    let room = end - row.x - fixed - DIVIDER;
-    let sessions = shown.saturating_sub(FIXED_TABS);
-    let asked: f32 = wanted
-        .iter()
-        .skip(FIXED_TABS)
-        .map(|width| width + 2.0)
-        .sum();
+    let fixed_width: f32 = wanted.iter().take(fixed).map(|width| width + 2.0).sum();
+    let room = end - row.x - fixed_width - DIVIDER;
+    let sessions = tabs.len().saturating_sub(fixed);
+    let asked: f32 = wanted.iter().skip(fixed).map(|width| width + 2.0).sum();
     #[allow(clippy::cast_precision_loss)] // A few dozen tabs.
     let share = (asked > room && sessions > 0).then(|| (room / sessions as f32 - 2.0).max(MIN_TAB));
     let mut x = row.x;
     for (index, mut width) in wanted.into_iter().enumerate() {
-        if index == FIXED_TABS {
+        if index == fixed {
             x += DIVIDER;
         }
-        if index >= FIXED_TABS
+        if index >= fixed
             && let Some(share) = share
         {
             width = width.min(share);
@@ -259,7 +254,13 @@ fn slots_for(
 /// The all-tabs button in `rect`, shown while some tabs do not fit on the strip (the first
 /// `on_strip` do): a menu of every tab, the one in front checked, with a search when it is
 /// long. A dot on it says a tab off the strip wants attention. Returns the tab picked.
-fn all_tabs(app: &NativeApp, ui: &mut Ui<'_>, rect: Rect, on_strip: usize) -> Option<usize> {
+fn all_tabs(
+    app: &NativeApp,
+    ui: &mut Ui<'_>,
+    rect: Rect,
+    tabs: &[usize],
+    on_strip: usize,
+) -> Option<usize> {
     let t = ui.theme;
     let id = Id::new("tab.all");
     let response = ui.zone(id, rect, Role::Button, "All tabs");
@@ -279,9 +280,9 @@ fn all_tabs(app: &NativeApp, ui: &mut Ui<'_>, rect: Rect, on_strip: usize) -> Op
     let glyph = rect.centered(16.0, 16.0);
     ui.gfx.icon(icons::MORE, glyph, t.text2.mix(t.text, hover));
     // The most urgent status among the tabs out of sight.
-    let waiting = app.tabs[on_strip.min(app.tabs.len())..]
+    let waiting = tabs[on_strip..]
         .iter()
-        .filter_map(|tab| tab.status)
+        .filter_map(|&index| app.tabs[index].status)
         .max_by_key(|status| match status {
             TabStatus::Unread => 0,
             TabStatus::Input => 1,
@@ -300,12 +301,17 @@ fn all_tabs(app: &NativeApp, ui: &mut Ui<'_>, rect: Rect, on_strip: usize) -> Op
     if response.hovered {
         ui.set_cursor(Cursor::Pointer);
     }
-    let items: Vec<String> = app.tabs.iter().map(|tab| tab.title.clone()).collect();
+    let items: Vec<String> = tabs
+        .iter()
+        .map(|&index| app.tabs[index].title.clone())
+        .collect();
     let width = items
         .iter()
         .map(|item| ui.gfx.measure(item, BODY).width + 2.0 * space::L + 24.0)
         .fold(240.0, f32::max);
-    ui.menu_for(id, &response, rect, &items, Some(app.active), width)
+    let selected = tabs.iter().position(|&index| index == app.active);
+    ui.menu_for(id, &response, rect, &items, selected, width)
+        .and_then(|place| tabs.get(place).copied())
 }
 
 /// The + button: a quiet square that lights on hover, its plus turning a little as it does.
@@ -332,16 +338,21 @@ fn plus_button(ui: &mut Ui<'_>, rect: Rect, response: &annulus_ui::kit::Response
 /// A session tab dragged along the strip follows the pointer, and passing the middle of a
 /// neighbour swaps the two, the neighbour gliding into the gap (F-APP-001). Fixed tabs never
 /// move. Returns the tab being dragged and where to draw it.
-fn drag_tab(app: &mut NativeApp, ui: &mut Ui<'_>, slots: &[Rect]) -> Option<(usize, f32)> {
-    let id_of = |app: &NativeApp, index: usize| Id::new(("tab", app.tabs[index].uid));
-    for index in FIXED_TABS..slots.len() {
+fn drag_tab(
+    app: &mut NativeApp,
+    ui: &mut Ui<'_>,
+    slots: &[Rect],
+    tabs: &[usize],
+    fixed: usize,
+) -> Option<(usize, f32)> {
+    let id_of = |app: &NativeApp, place: usize| Id::new(("tab", app.tabs[tabs[place]].uid));
+    for index in fixed..slots.len() {
         if ui.drag_released(id_of(app, index)).is_some() {
             app.tab_grab = None;
         }
     }
-    let index =
-        (FIXED_TABS..slots.len()).find(|index| ui.drag_moved(id_of(app, *index)).is_some())?;
-    let uid = app.tabs[index].uid;
+    let index = (fixed..slots.len()).find(|index| ui.drag_moved(id_of(app, *index)).is_some())?;
+    let uid = app.tabs[tabs[index]].uid;
     let pointer = ui.drag_moved(id_of(app, index))?;
     let grab = match app.tab_grab {
         Some((held, grab)) if held == uid => grab,
@@ -349,11 +360,11 @@ fn drag_tab(app: &mut NativeApp, ui: &mut Ui<'_>, slots: &[Rect]) -> Option<(usi
             let held = ui.pressed_at().unwrap_or(pointer);
             let grab = held.x - slots[index].x;
             app.tab_grab = Some((uid, grab));
-            app.active = index;
+            app.active = tabs[index];
             grab
         }
     };
-    let first = slots[FIXED_TABS].x;
+    let first = slots[fixed].x;
     let last = slots.last().map_or(first, |slot| slot.r() - slots[index].w);
     let x = (pointer.x - grab).clamp(first, last.max(first));
     // Let go, it glides from where it was dropped into its place.
@@ -361,14 +372,14 @@ fn drag_tab(app: &mut NativeApp, ui: &mut Ui<'_>, slots: &[Rect]) -> Option<(usi
     // Where the pointer has it, past the strip's ends too: drawn inside the strip, it can
     // still pass the middle of the last tab.
     let center = pointer.x - grab + slots[index].w / 2.0;
-    let to = if index > FIXED_TABS && center < slots[index - 1].center().x {
+    let to = if index > fixed && center < slots[index - 1].center().x {
         index - 1
     } else if index + 1 < slots.len() && center > slots[index + 1].center().x {
         index + 1
     } else {
         index
     };
-    app.move_tab(index, to);
+    app.move_tab(tabs[index], tabs[to]);
     Some((to, x))
 }
 

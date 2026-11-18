@@ -7,7 +7,7 @@ version = "0.2.0"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/solarisc/terminal-emu"
+repository = "https://github.com/annulus-app/Annulus"
 publish = false
 
 # Direct dependency versions are pinned here once; crates inherit them with `foo.workspace = true`.

@@ -27,13 +27,13 @@ It's written in Rust, down to its own UI toolkit, so there's no browser hiding i
 
 ## Try it
 
-**Download.** Get Annulus for your system from the [Releases](https://github.com/solarisc/terminal-emu/releases) page. On Windows, run `annulus-setup` to install it for your account (no administrator needed), or take the zip: a folder with `annulus-app` and the `annulus-agent` command that runs from wherever you unpack it. On macOS and Linux, unpack the zip. The sync server is a download of its own. Builds aren't signed yet, so Windows and macOS will ask you to confirm the first time you open one.
+**Download.** Get Annulus for your system from the [Releases](https://github.com/annulus-app/Annulus/releases) page. On Windows, run `annulus-setup` to install it for your account (no administrator needed), or take the zip: a folder with `annulus-app` and the `annulus-agent` command that runs from wherever you unpack it. On macOS and Linux, unpack the zip. The sync server is a download of its own. Builds aren't signed yet, so Windows and macOS will ask you to confirm the first time you open one.
 
 **Or build it.** You'll need [Rust](https://rustup.rs) and a C compiler. On Linux, that means `build-essential` and `pkg-config`. Rustup fetches the exact toolchain the project pins, and the first build takes a few minutes.
 
 ```bash
-git clone https://github.com/solarisc/terminal-emu
-cd terminal-emu
+git clone https://github.com/annulus-app/Annulus
+cd Annulus
 cargo run -p annulus-app --release -- --preview
 ```
 

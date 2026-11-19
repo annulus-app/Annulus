@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time. Please leave out anything private: real host names, addresses and keys aren't needed here. Security problems go through [SECURITY.md](https://github.com/solarisc/terminal-emu/blob/main/SECURITY.md) instead.
+        Thanks for taking the time. Please leave out anything private: real host names, addresses and keys aren't needed here. Security problems go through [SECURITY.md](https://github.com/annulus-app/Annulus/blob/main/SECURITY.md) instead.
   - type: textarea
     id: what
     attributes:

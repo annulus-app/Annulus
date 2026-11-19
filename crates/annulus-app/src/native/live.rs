@@ -403,6 +403,21 @@ impl LiveTerminal {
         self.program.clone()
     }
 
+    /// The destination of an open SSH shell. Login questions precede the shell.
+    pub(super) fn connected_ssh_target(&self) -> Option<&annulus_session::Target> {
+        match &self.program {
+            Program::Ssh { target, .. }
+                if self.started()
+                    && !self.ended()
+                    && self.failure().is_none()
+                    && (self.stage == 3 || self.output() > 0) =>
+            {
+                Some(target)
+            }
+            _ => None,
+        }
+    }
+
     /// What the session showed, for its log; `None` if it never started.
     #[must_use]
     pub fn transcript(&self) -> Option<String> {

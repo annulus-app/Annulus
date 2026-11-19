@@ -135,6 +135,76 @@ fn an_agent_runs_a_command_through_the_door_in_its_own_tab_and_gets_its_output()
 }
 
 #[test]
+fn elevation_takes_the_keyboard_over_its_terminal_and_escape_returns_it() {
+    let mut app = NativeApp::new(Some(fixture_vault("sudo-modal", true)));
+    app.settings.automation = true;
+    app.open_terminal("Test terminal".into(), Program::DefaultShell, None);
+    app.tabs[app.active].agent = Some(Box::new(crate::native::control::AgentLog::new(0)));
+    let mut state = UiState::default();
+    let output = step(&mut app, &mut state, &[], 0.0);
+    let terminal = output
+        .zones
+        .iter()
+        .find(|zone| zone.role == Role::Terminal)
+        .unwrap()
+        .rect;
+    app.preview_elevation();
+    let output = step(
+        &mut app,
+        &mut state,
+        &[Event::Text("test password".into())],
+        1.0,
+    );
+    let tree = annulus_ui::access::tree(&output.zones, state.focus(), 1.0, "Annulus");
+    let dialog = output
+        .zones
+        .iter()
+        .find(|zone| zone.role == Role::Dialog)
+        .unwrap()
+        .rect;
+    assert!(terminal.contains(dialog.center()));
+    let (id, field) = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Sudo password"))
+        .unwrap();
+    assert_eq!(tree.focus, *id);
+    assert_eq!(
+        field.role(),
+        annulus_ui::access::accesskit::Role::PasswordInput
+    );
+    assert!(field.value().is_none());
+    assert!(
+        output
+            .zones
+            .iter()
+            .all(|zone| zone.role != Role::Terminal && zone.label != "Stop")
+    );
+    let output = step(
+        &mut app,
+        &mut state,
+        &[Event::Key(Key::Escape, Modifiers::NONE)],
+        2.0,
+    );
+    assert!(!app.tabs[app.active].elevating());
+    assert!(
+        output
+            .zones
+            .iter()
+            .any(|zone| zone.role == Role::Terminal && Some(zone.id) == state.focus())
+    );
+    let Some(TermView::Live(panes)) = &app.tabs[app.active].terminal else {
+        unreachable!()
+    };
+    assert!(
+        !panes
+            .focused_transcript()
+            .unwrap()
+            .contains("test password")
+    );
+}
+
+#[test]
 fn transfer_approval_buttons_and_stop_control_the_copy() {
     let mut app = NativeApp::new(Some(fixture_vault("scp-buttons", true)));
     app.preview_transfer();

@@ -90,7 +90,7 @@ pub enum Request {
         /// The agent tab's id.
         tab: u64,
     },
-    /// Asks the owner to type the SSH password in Annulus, then refreshes `sudo` credentials
+    /// Asks the owner to type the sudo password in Annulus, then refreshes `sudo` credentials
     /// in agent tab `tab`. The password never crosses the control connection.
     Elevate {
         /// The agent SSH tab's id.

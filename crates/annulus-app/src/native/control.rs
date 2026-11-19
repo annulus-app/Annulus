@@ -15,7 +15,7 @@ use annulus_control::protocol::{
 use annulus_vault::groups::Group;
 use annulus_vault::hosts::Host;
 use annulus_vault::vault::Vault;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize as _, Zeroizing};
 
 use super::live::AgentMarks;
 use super::{NativeApp, Tab, TabKind, TermView};
@@ -42,29 +42,93 @@ pub struct AgentLog {
 
 struct Elevation {
     call: Option<Pending>,
+    pane: u64,
+    destination: String,
     secret: Zeroizing<String>,
     marker: String,
     ready_marker: String,
+    failed_marker: String,
     command: String,
     submitted: Option<Instant>,
     password_sent: bool,
 }
 
 impl Elevation {
-    fn new(call: Option<Pending>, id: u64) -> Self {
+    fn new(call: Option<Pending>, pane: u64, id: u64, destination: String) -> Self {
+        let prefix = format!("[Annulus elevation {id}]");
         Self {
             call,
+            pane,
+            destination,
             secret: Zeroizing::new(String::new()),
-            marker: format!("[Annulus elevation {id}] Password: "),
-            ready_marker: format!("[Annulus elevation {id}] ready"),
-            // Build the visible strings through a shell variable. Neither complete marker is
-            // in the echoed command, so seeing one proves sudo/the success branch printed it.
+            marker: format!("{prefix} Password:"),
+            ready_marker: format!("{prefix} ready"),
+            failed_marker: format!("{prefix} failed"),
+            // Adjacent quoted strings keep the real prompt out of the echoed command.
+            // Let sudo read its controlling tty and maintain its normal timestamp there.
             command: format!(
-                "p='[Annulus elevation {id}]'; sudo -k -S -p \"$p Password: \" -v && printf '\\n%s ready\\n' \"$p\"\r"
+                "command sudo -v -p '{prefix}'' Password: ' && printf '\\n%s ready\\n' '{prefix}' || printf '\\n%s failed\\n' '{prefix}'\r"
             ),
             submitted: None,
             password_sent: false,
         }
+    }
+
+    fn terminal<'a>(&self, view: Option<&'a TermView>) -> Option<&'a super::live::LiveTerminal> {
+        let Some(TermView::Live(panes)) = view else {
+            return None;
+        };
+        panes
+            .terminal(self.pane)
+            .filter(|term| term.started() && !term.ended() && term.failure().is_none())
+    }
+
+    fn advance(
+        &mut self,
+        shown: &str,
+        now: Instant,
+        mut write: impl FnMut(&[u8]),
+    ) -> Option<Result<Response, String>> {
+        let started = self.submitted?;
+        if shown.lines().any(|line| line == self.ready_marker) {
+            return Some(Ok(Response::Done));
+        }
+        if shown.lines().any(|line| line == self.failed_marker) {
+            return Some(Err("sudo could not validate credentials".into()));
+        }
+        if now.duration_since(started) >= START_WITHIN {
+            write(b"\x03");
+            return Some(Err("sudo did not finish elevation within 30 seconds".into()));
+        }
+        // Only the current prompt can receive a password. An old one in scrollback
+        // must never cause a write into a shell that has already returned.
+        if shown.lines().next_back() == Some(self.marker.as_str()) {
+            if !self.password_sent {
+                let mut input = Zeroizing::new(Vec::with_capacity(self.secret.len() + 1));
+                input.extend_from_slice(self.secret.as_bytes());
+                input.push(b'\r');
+                self.secret.zeroize();
+                write(&input);
+                self.password_sent = true;
+            } else if shown
+                .lines()
+                .filter(|line| *line == self.marker)
+                .nth(1)
+                .is_some()
+            {
+                write(b"\x03");
+                return Some(Err("sudo refused that password".into()));
+            }
+        }
+        None
+    }
+}
+
+impl Tab {
+    pub(super) fn elevating(&self) -> bool {
+        self.agent
+            .as_ref()
+            .is_some_and(|log| log.elevation.is_some())
     }
 }
 
@@ -595,6 +659,11 @@ impl NativeApp {
             }
         }
         let now = Instant::now();
+        let modal_tab = self
+            .tabs
+            .get(self.active)
+            .filter(|tab| tab.elevating())
+            .map(|tab| tab.uid);
         let calls = self.door.as_ref().map(Door::take_calls).unwrap_or_default();
         for call in calls {
             match &call.request {
@@ -605,6 +674,9 @@ impl NativeApp {
                 Request::Run { tab, command, wait } => {
                     let (tab, command, wait) = (*tab, command.clone(), waited(*wait));
                     match agent_tab(self, tab) {
+                        Ok(target) if target.elevating() => {
+                            call.answer(Err(format!("tab {tab} is waiting for sudo validation")));
+                        }
                         Ok(_) => {
                             let approval = self.settings.approve_commands.then(|| {
                                 let id = self.next_approval;
@@ -645,6 +717,15 @@ impl NativeApp {
         }
         self.move_runs(now);
         self.move_elevations(now);
+        // Keep another agent's request from switching the password field mid-entry.
+        if let Some(index) = self
+            .tabs
+            .iter()
+            .position(|tab| Some(tab.uid) == modal_tab && tab.elevating())
+            .or_else(|| self.tabs.iter().position(Tab::elevating))
+        {
+            self.active = index;
+        }
         self.move_transfers();
         if self.settings.closes_ended_agent_tabs() {
             self.close_ended_agent_tabs();
@@ -662,13 +743,7 @@ impl NativeApp {
 
     /// Holds an elevation call in its tab until the owner supplies the password or cancels.
     fn ask_elevation(&mut self, call: Pending, uid: u64) {
-        let id = self.next_approval;
-        self.next_approval = self.next_approval.wrapping_add(1).max(1);
-        if self
-            .runs
-            .iter()
-            .any(|run| run.tab == uid && run.call.is_some())
-        {
+        if self.runs.iter().any(|run| run.tab == uid) {
             call.answer(Err(format!(
                 "tab {uid} already has a command waiting; elevate once it finishes"
             )));
@@ -678,17 +753,17 @@ impl NativeApp {
             call.answer(Err(format!("no agent tab {uid}")));
             return;
         };
-        let ssh = matches!(
-            &tab.terminal,
-            Some(TermView::Live(panes))
-                if matches!(panes.focused_program(), Some(annulus_session::Program::Ssh { .. }))
-                    && !panes.focused_ended()
-                    && panes.focused_failure().is_none()
-        );
-        if !ssh {
+        let Some(TermView::Live(panes)) = &tab.terminal else {
+            call.answer(Err(format!("tab {uid} holds no terminal")));
+            return;
+        };
+        let Some(target) = panes
+            .terminal(panes.focused)
+            .and_then(super::live::LiveTerminal::connected_ssh_target)
+        else {
             call.answer(Err(format!("tab {uid} is not a connected SSH terminal")));
             return;
-        }
+        };
         let Some(log) = tab.agent.as_mut() else {
             unreachable!()
         };
@@ -696,11 +771,12 @@ impl NativeApp {
             call.answer(Err(format!("tab {uid} already has an elevation request")));
             return;
         }
-        log.folded = false;
-        log.elevation = Some(Elevation::new(Some(call), id));
-        if let Some(index) = self.tabs.iter().position(|tab| tab.uid == uid) {
-            self.active = index;
-        }
+        let Ok(id) = getrandom::u64() else {
+            call.answer(Err("could not create a unique sudo prompt".into()));
+            return;
+        };
+        let destination = format!("{}@{}:{}", target.user, target.host, target.port);
+        log.elevation = Some(Elevation::new(Some(call), panes.focused, id, destination));
     }
 
     /// Starts `sudo`, or refuses the waiting caller. The password is deliberately not sent in
@@ -709,82 +785,61 @@ impl NativeApp {
         let Some(tab) = self.tabs.iter_mut().find(|tab| tab.uid == uid) else {
             return;
         };
-        let Some(elevation) = tab.agent.as_mut().and_then(|log| log.elevation.as_mut()) else {
+        let Some(log) = tab.agent.as_mut() else {
             return;
         };
-        if !approved {
-            if let Some(mut elevation) = tab.agent.as_mut().and_then(|log| log.elevation.take())
-                && let Some(call) = elevation.call.take()
+        let Some(mut elevation) = log.elevation.take() else {
+            return;
+        };
+        let terminal = elevation.terminal(tab.terminal.as_ref());
+        let error = if !approved {
+            if elevation.submitted.is_some()
+                && let Some(terminal) = terminal
             {
-                call.answer(Err("the owner cancelled elevation".into()));
+                terminal.write(b"\x03");
             }
-            return;
-        }
-        let Some(TermView::Live(panes)) = &tab.terminal else {
-            if let Some(call) = elevation.call.take() {
-                call.answer(Err(format!("tab {uid} holds no terminal")));
-            }
-            return;
-        };
-        if panes.type_focused(elevation.command.as_bytes()) {
+            "the owner cancelled elevation"
+        } else if let Some(terminal) = terminal {
+            terminal.write(elevation.command.as_bytes());
             elevation.submitted = Some(Instant::now());
-        } else if let Some(call) = elevation.call.take() {
-            call.answer(Err(format!("tab {uid} has not started yet")));
+            log.elevation = Some(elevation);
+            return;
+        } else {
+            "the SSH terminal closed before elevation"
+        };
+        if let Some(call) = elevation.call {
+            call.answer(Err(error.into()));
         }
+        self.focus_active_terminal();
     }
 
-    /// Once sudo's prompt appears (and terminal echo is off), sends the password. It answers
-    /// only after the shell prints the success marker; a retry or stale request is refused.
     fn move_elevations(&mut self, now: Instant) {
         for tab in &mut self.tabs {
-            let Some(elevation) = tab.agent.as_mut().and_then(|log| log.elevation.as_mut()) else {
+            let Some(log) = tab.agent.as_mut() else {
                 continue;
             };
-            let Some(started) = elevation.submitted else {
+            let Some(elevation) = log.elevation.as_mut() else {
                 continue;
             };
-            let Some(TermView::Live(panes)) = &tab.terminal else {
-                continue;
-            };
-            let shown = panes.focused_transcript().unwrap_or_default();
-            let prompts = shown.matches(&elevation.marker).count();
-            let ready = shown.contains(&elevation.ready_marker);
-            let timed_out = now.duration_since(started) >= START_WITHIN;
-            if !elevation.password_sent && prompts > 0 {
-                let mut input = Zeroizing::new(Vec::new());
-                input.extend(
-                    elevation
-                        .secret
-                        .bytes()
-                        .filter(|byte| !matches!(byte, b'\r' | b'\n')),
-                );
-                input.push(b'\r');
-                if panes.type_focused(&input) {
-                    elevation.secret.clear();
-                    elevation.password_sent = true;
+            let result = if let Some(terminal) = elevation.terminal(tab.terminal.as_ref()) {
+                if elevation.submitted.is_none() {
                     continue;
                 }
-            }
-            let retry = elevation.password_sent && prompts > 1;
-            if !ready && !timed_out && !retry {
-                continue;
-            }
-            let Some(mut elevation) = tab.agent.as_mut().and_then(|log| log.elevation.take())
-            else {
-                continue;
-            };
-            let Some(call) = elevation.call.take() else {
-                continue;
-            };
-            if ready {
-                call.answer(Ok(Response::Done));
+                let shown = terminal.transcript().unwrap_or_default();
+                elevation.advance(&shown, now, |bytes| terminal.write(bytes))
             } else {
-                panes.type_focused(b"\x03");
-                call.answer(Err(if retry {
-                    "sudo refused that password".into()
-                } else {
-                    "sudo did not finish elevation within 30 seconds".into()
-                }));
+                Some(Err("the SSH terminal closed before elevation".into()))
+            };
+            if let Some(result) = result {
+                if let Err(why) = &result {
+                    self.agent_news.push(why.clone());
+                }
+                if let Some(call) = log.elevation.take().and_then(|e| e.call) {
+                    call.answer(result);
+                }
+                if let Some(TermView::Live(panes)) = &mut tab.terminal {
+                    panes.refocus();
+                }
             }
         }
     }
@@ -842,6 +897,16 @@ impl NativeApp {
             after: After::default(),
             stale: true,
         });
+    }
+
+    #[cfg(test)]
+    pub(super) fn preview_elevation(&mut self) {
+        let tab = &mut self.tabs[self.active];
+        let Some(TermView::Live(panes)) = &tab.terminal else {
+            unreachable!()
+        };
+        let log = tab.agent.get_or_insert_with(|| Box::new(AgentLog::new(0)));
+        log.elevation = Some(Elevation::new(None, panes.focused, 42, tab.title.clone()));
     }
 
     /// Turning approval off releases commands already held by it.
@@ -909,10 +974,15 @@ impl NativeApp {
     pub(super) fn cut_runs(&mut self, now: Instant) {
         self.cut_transfers();
         for tab in &mut self.tabs {
-            if let Some(mut elevation) = tab.agent.as_mut().and_then(|log| log.elevation.take())
-                && let Some(call) = elevation.call.take()
-            {
-                call.answer(Err("agents were stopped before elevation".into()));
+            if let Some(elevation) = tab.agent.as_mut().and_then(|log| log.elevation.take()) {
+                if elevation.submitted.is_some()
+                    && let Some(terminal) = elevation.terminal(tab.terminal.as_ref())
+                {
+                    terminal.write(b"\x03");
+                }
+                if let Some(call) = elevation.call {
+                    call.answer(Err("agents were stopped before elevation".into()));
+                }
             }
         }
         for run in std::mem::take(&mut self.runs) {
@@ -1169,7 +1239,7 @@ fn last_answer(app: &mut NativeApp, uid: u64, now: Instant) -> Result<Response, 
 mod panel;
 #[cfg(test)]
 use panel::{Ink, clock, describe_run, lines_said, session_said, wrap_command};
-pub use panel::{PanelAction, agent_panel, panel_width};
+pub use panel::{PanelAction, agent_panel, elevation_modal, panel_width};
 /// Agent tab `uid`, or why it is not one.
 fn agent_tab(app: &mut NativeApp, uid: u64) -> Result<&mut Tab, String> {
     let tab = app
@@ -1258,6 +1328,9 @@ pub fn handle(app: &mut NativeApp, request: &Request) -> Result<Response, String
         Request::Wait { tab, .. } => last_answer(app, *tab, Instant::now()),
         Request::Interrupt { tab } => {
             let agent = agent_tab(app, *tab)?;
+            if agent.elevating() {
+                return Err(format!("tab {tab} is waiting for sudo validation"));
+            }
             let Some(TermView::Live(panes)) = &agent.terminal else {
                 return Err(format!("tab {tab} holds no terminal"));
             };
@@ -1488,10 +1561,42 @@ mod tests {
 
     #[test]
     fn elevation_waits_for_real_sudo_markers_not_the_echoed_command() {
-        let elevation = Elevation::new(None, 42);
-        assert!(!elevation.command.contains(&elevation.marker));
-        assert!(!elevation.command.contains(&elevation.ready_marker));
-        assert!(elevation.command.contains("sudo -k -S"));
+        let now = Instant::now();
+        let mut elevation = Elevation::new(None, 1, 42, "user@test".into());
+        elevation.submitted = Some(now);
+        elevation.secret.push_str("test password");
+        let mut terminal = annulus_term::Emulator::new(18, 12);
+        terminal.advance(elevation.command.trim_end().as_bytes());
+        let mut writes = Vec::new();
+        let mut poll = |terminal: &mut annulus_term::Emulator, writes: &mut Vec<u8>| {
+            let shown = annulus_term::transcript::transcript(terminal.term_mut());
+            elevation.advance(&shown, now, |bytes| writes.extend_from_slice(bytes))
+        };
+        assert!(poll(&mut terminal, &mut writes).is_none());
+        assert_eq!(writes, b"");
+        terminal.advance(b"\r\n[Annulus elevation 42] Password: ");
+        assert!(poll(&mut terminal, &mut writes).is_none());
+        assert!(poll(&mut terminal, &mut writes).is_none());
+        assert_eq!(writes, b"test password\r");
+        terminal.advance(b"\r\n[Annulus elevation 42] ready\r\n$ ");
+        assert!(matches!(
+            poll(&mut terminal, &mut writes),
+            Some(Ok(Response::Done))
+        ));
+        assert!(!elevation.command.split_whitespace().any(|arg| arg == "-k"));
+    }
+
+    #[test]
+    fn cached_or_failed_sudo_never_receives_a_password_at_the_shell_prompt() {
+        let now = Instant::now();
+        for (marker, success) in [("ready", true), ("failed", false)] {
+            let mut elevation = Elevation::new(None, 1, 42, "user@test".into());
+            elevation.submitted = Some(now);
+            let shown =
+                format!("[Annulus elevation 42] Password:\n[Annulus elevation 42] {marker}\n$\n");
+            let result = elevation.advance(&shown, now, |_| panic!("wrote to the shell"));
+            assert_eq!(result.unwrap().is_ok(), success);
+        }
     }
 
     /// Every request, answered and written as it would go through the door.

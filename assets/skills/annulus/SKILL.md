@@ -28,9 +28,10 @@ When a command needs `sudo`, ask Annulus to elevate the agent's SSH tab:
 annulus-agent elevate <tab-id>
 ```
 
-Annulus prompts the user to type the SSH password and sends it directly to `sudo`; the agent
-never receives it. Wait for the user to answer. Never ask them to reveal the password or try
-another route around the prompt. MCP exposes the same action as `annulus_elevate`.
+Annulus asks for the sudo password in a modal over the SSH terminal. Wait for elevation to
+finish, then run sudo commands in the same tab. The host's sudo policy controls how long
+access stays cached. The agent never receives the password. Never ask the user to reveal it
+or try another route around the prompt. MCP exposes the same action as `annulus_elevate`.
 
 Copy files through a saved host with `scp` (`annulus-agent.exe` on Windows):
 

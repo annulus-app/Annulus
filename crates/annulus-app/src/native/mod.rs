@@ -1504,6 +1504,11 @@ impl NativeApp {
         let mut area = ui.viewport;
         ui.gfx.fill_rect(area, 0.0, t.chrome);
         let bar = area.take_top(TITLE_H);
+        let password_tab = self
+            .tabs
+            .get(self.active)
+            .filter(|tab| tab.elevating())
+            .map(|tab| tab.uid);
         self.background(ui);
         self.poll_lock(ui.time());
         if self
@@ -1518,12 +1523,28 @@ impl NativeApp {
             // A command's output is settling: look again soon.
             ui.request_repaint_after(std::time::Duration::from_millis(100));
         }
+        if let Some(uid) = password_tab
+            && !self
+                .tabs
+                .get(self.active)
+                .is_some_and(|tab| tab.uid == uid && tab.elevating())
+        {
+            // The SSH tab or request ended between frames. Input meant for its dialog
+            // must not reach the shell or a password field in another tab.
+            drop(ui.take_typed());
+        }
         shortcuts::choose(&self.settings.keys);
         // Keys being recorded in Settings reach no shortcut.
         let in_settings = !locked
             && self.section == Section::Settings
             && self.tabs.get(self.active).map(|tab| tab.kind) == Some(TabKind::Vault);
         let theme_modal = self.settings_view.picker.is_some();
+        let elevating = self.palette.is_none()
+            && !theme_modal
+            && self.tabs.get(self.active).is_some_and(Tab::elevating);
+        if elevating {
+            ui.push_inert();
+        }
         if !theme_modal && let Some(focus) = self.settings_view.theme_focus.take() {
             ui.state.set_focus(Some(focus), true);
         }
@@ -1560,7 +1581,7 @@ impl NativeApp {
             .get(self.active)
             .and_then(|tab| self.pending_approval(tab.uid));
         let mut approval_choice = None;
-        let mut elevation_choice = None;
+        let mut elevation_area = None;
         let picking = self
             .tabs
             .get(self.active)
@@ -1725,6 +1746,7 @@ impl NativeApp {
                 .as_deref()
                 .map(|log| panel(ui, area.take_right(control::panel_width(log) + PANEL_GAP)));
             let content = panel_filled(ui, area, background);
+            elevation_area = Some(content);
             let allowed = self.settings.automation;
             let agent_action = match (strip, tab.agent.as_deref_mut()) {
                 (Some(rect), Some(log)) => control::agent_panel(
@@ -1735,11 +1757,6 @@ impl NativeApp {
                     active_approval.as_ref(),
                     false,
                 ),
-                _ => None,
-            };
-            elevation_choice = match agent_action {
-                Some(control::PanelAction::Elevate) => Some((tab.uid, true)),
-                Some(control::PanelAction::CancelElevation) => Some((tab.uid, false)),
                 _ => None,
             };
             if let (Some(log), TermView::Live(panes)) = (tab.agent.as_deref(), &mut *view) {
@@ -1827,18 +1844,6 @@ impl NativeApp {
             );
             ui.request_repaint();
         }
-        if let Some((tab, approved)) = elevation_choice {
-            self.decide_elevation(tab, approved);
-            ui.toast(
-                if approved {
-                    "Elevation started"
-                } else {
-                    "Elevation cancelled"
-                },
-                if approved { Tone::Done } else { Tone::Info },
-            );
-            ui.request_repaint();
-        }
         if switching.is_some() {
             ui.pop_layer();
             ui.pop_clip();
@@ -1872,6 +1877,21 @@ impl NativeApp {
         }
         self.palette_frame(ui);
         self.flight(ui);
+        if elevating {
+            ui.pop_inert();
+            if let Some(content) = elevation_area
+                && let Some(tab) = self.tabs.get_mut(self.active)
+                && let Some(log) = tab.agent.as_deref_mut()
+            {
+                // With two side panels open the terminal can be narrower than its dialog.
+                let rect = if content.w < 300.0 { area } else { content };
+                let uid = tab.uid;
+                if let Some(approved) = control::elevation_modal(ui, rect, uid, log) {
+                    self.decide_elevation(uid, approved);
+                    ui.request_repaint();
+                }
+            }
+        }
         for news in std::mem::take(&mut self.agent_news) {
             ui.toast(news, Tone::Info);
         }

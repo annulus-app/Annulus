@@ -403,6 +403,10 @@ impl Panes {
         self.all.iter().find(|pane| pane.id == id)
     }
 
+    pub(super) fn terminal(&self, id: u64) -> Option<&LiveTerminal> {
+        self.pane(id).map(|pane| &pane.terminal)
+    }
+
     /// The panes in reading order: left to right, top to bottom.
     fn order(&self) -> Vec<u64> {
         let mut order = Vec::new();

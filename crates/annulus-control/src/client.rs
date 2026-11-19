@@ -213,7 +213,7 @@ impl Client {
         self.call(Request::Interrupt { tab })
     }
 
-    /// Prompts the owner in Annulus for the SSH password and refreshes `sudo` credentials in
+    /// Prompts the owner in Annulus for the sudo password and refreshes `sudo` credentials in
     /// agent tab `tab`.
     ///
     /// # Errors

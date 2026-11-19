@@ -43,7 +43,7 @@ Commands:
   wait <tab> [S]                wait up to S seconds (30 by default) for the last command in
                                 your tab <tab> to finish, and print as run does
   interrupt <tab>               press Ctrl+C in your tab <tab> (a command that hangs stops)
-  elevate <tab>                 ask the owner for the SSH password in Annulus and refresh
+  elevate <tab>                 ask the owner for the sudo password in Annulus and refresh
                                 sudo access in your SSH tab (the password is never returned)
   close <tab>                   close your tab <tab>, once the owner lets agents close tabs
                                 (Settings > Agents; not by default)

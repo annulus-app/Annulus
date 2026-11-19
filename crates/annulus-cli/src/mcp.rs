@@ -259,7 +259,7 @@ fn tools() -> Value {
         },
         {
             "name": "annulus_elevate",
-            "description": "Asks the owner to type the SSH password in Annulus, then refreshes sudo credentials in one of your SSH tabs. The password stays in Annulus and is never returned to you. Wait for the owner; do not ask for or work around the password.",
+            "description": "Asks the owner for the sudo password in Annulus and refreshes sudo access for subsequent commands in the same SSH tab. Wait for the request to finish. Only the owner enters the password.",
             "inputSchema": { "type": "object", "properties": { "tab": tab }, "required": ["tab"] },
         },
         {

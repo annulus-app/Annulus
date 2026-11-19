@@ -251,6 +251,7 @@ dependencies = [
  "annulus-ui",
  "annulus-vault",
  "directories",
+ "getrandom 0.4.3",
  "tokio",
  "zeroize",
 ]
